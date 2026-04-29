@@ -1,4 +1,5 @@
 import { S3Client } from "@aws-sdk/client-s3";
+
 const getRequiredEnv = (key) => {
   const value = process.env[key];
   if (!value) {

@@ -139,3 +139,7 @@ export const getScanHistory = async (req, res) => {
       .json({ message: "Failed to fetch scan history", error: error.message });
   }
 };
+
+
+
+
