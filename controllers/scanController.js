@@ -1,18 +1,94 @@
 import mongoose from "mongoose";
+import Tesseract from "tesseract.js";
 import Scan from "../models/scanModel.js";
 import User from "../models/userModel.js";
 
 const allergyKeywordMap = {
-  milk: ["milk", "whey", "casein", "lactose", "milk solids"],
-  soy: ["soy", "soya", "soy lecithin", "soy protein"],
-  peanuts: ["peanut", "groundnut"],
-  nuts: ["almond", "cashew", "walnut", "hazelnut", "pistachio", "nut"],
-  gluten: ["wheat", "barley", "rye", "malt", "gluten"],
-  egg: ["egg", "albumin"],
+  milk: ["milk", "whey", "casein", "lactose", "milk solids", "milk powder"],
+  dairy: ["milk", "whey", "casein", "lactose", "milk solids", "butterfat"],
+  soy: ["soy", "soya", "soy lecithin", "soy protein", "textured soy protein"],
+  soya: ["soy", "soya", "soy lecithin", "soy protein", "textured soy protein"],
+  peanut: ["peanut", "peanuts", "groundnut", "groundnuts", "peanut butter"],
+  peanuts: ["peanut", "peanuts", "groundnut", "groundnuts", "peanut butter"],
+  nuts: [
+    "peanut",
+    "peanuts",
+    "groundnut",
+    "groundnuts",
+    "peanut butter",
+    "almond",
+    "cashew",
+    "walnut",
+    "hazelnut",
+    "pistachio",
+    "macadamia",
+    "pecan",
+    "brazil nut",
+    "tree nut",
+    "tree nuts",
+  ],
+  "tree nuts": [
+    "peanut",
+    "peanuts",
+    "groundnut",
+    "groundnuts",
+    "peanut butter",
+    "almond",
+    "cashew",
+    "walnut",
+    "hazelnut",
+    "pistachio",
+    "macadamia",
+    "pecan",
+    "brazil nut",
+    "tree nut",
+    "tree nuts",
+  ],
+  gluten: ["wheat", "barley", "rye", "malt", "gluten", "semolina"],
+  egg: ["egg", "eggs", "albumin", "egg white", "egg yolk"],
+  eggs: ["egg", "eggs", "albumin", "egg white", "egg yolk"],
+};
+
+const normalizeSearchText = (value = "") =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const containsKeyword = (normalizedText = "", keyword = "") => {
+  if (!keyword) {
+    return false;
+  }
+  const normalizedKeyword = normalizeSearchText(keyword);
+  if (!normalizedKeyword) {
+    return false;
+  }
+  const keywordVariants = new Set([normalizedKeyword]);
+  if (!normalizedKeyword.endsWith("s")) {
+    keywordVariants.add(`${normalizedKeyword}s`);
+  } else if (normalizedKeyword.length > 3) {
+    keywordVariants.add(normalizedKeyword.slice(0, -1));
+  }
+
+  for (const variant of keywordVariants) {
+    if (variant.includes(" ")) {
+      if (normalizedText.includes(variant)) {
+        return true;
+      }
+      continue;
+    }
+    const regex = new RegExp(`\\b${variant}\\b`, "i");
+    if (regex.test(normalizedText)) {
+      return true;
+    }
+  }
+
+  return false;
 };
 
 const findAllergyMatches = (allergies = [], ingredientsText = "") => {
-  const text = ingredientsText.toLowerCase();
+  const normalizedText = normalizeSearchText(ingredientsText);
 
   return allergies.flatMap((allergyRaw) => {
     const allergy = String(allergyRaw).trim();
@@ -22,7 +98,9 @@ const findAllergyMatches = (allergies = [], ingredientsText = "") => {
 
     const normalizedAllergy = allergy.toLowerCase();
     const keywords = allergyKeywordMap[normalizedAllergy] || [normalizedAllergy];
-    const matchedKeyword = keywords.find((keyword) => text.includes(keyword));
+    const matchedKeyword = keywords.find((keyword) =>
+      containsKeyword(normalizedText, keyword),
+    );
 
     if (!matchedKeyword) {
       return [];
@@ -36,6 +114,57 @@ const findAllergyMatches = (allergies = [], ingredientsText = "") => {
       },
     ];
   });
+};
+
+const normalizeExtractedText = (rawText = "") => {
+  const cleanedText = rawText
+    .replace(/\s+/g, " ")
+    .replace(/[|]/g, " ")
+    .trim();
+
+  const ingredientsCapture = cleanedText.match(
+    /ingredients?\s*[:\-]\s*([\s\S]*?)(nutrition|nutritional|allergen|contains|storage|manufactured|net\s*qty|mrp|best before|$)/i,
+  );
+
+  if (ingredientsCapture?.[1]) {
+    return ingredientsCapture[1].trim();
+  }
+
+  return cleanedText.replace(/\bINGREDIENTS?\b[:\-]?/gi, "").trim();
+};
+
+export const extractIngredientsTextFromImage = async (req, res) => {
+  try {
+    const imageFile = req.file;
+
+    if (!imageFile) {
+      return res.status(400).json({ message: "image file is required" });
+    }
+
+    const {
+      data: { text },
+    } = await Tesseract.recognize(imageFile.buffer, "eng");
+
+    const normalizedText = normalizeExtractedText(text);
+
+    if (!normalizedText) {
+      return res.status(422).json({
+        message: "Unable to extract readable text from image",
+      });
+    }
+
+    return res.status(200).json({
+      data: {
+        ingredientsText: normalizedText,
+        rawText: text,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: "Failed to extract text from image",
+      error: error.message,
+    });
+  }
 };
 
 export const analyzeScan = async (req, res) => {
@@ -82,6 +211,7 @@ export const analyzeScan = async (req, res) => {
         scanId: scan._id,
         status: scan.status,
         summary: scan.summary,
+        usedAllergies: user.allergies,
         matchedAllergens: scan.matchedAllergens,
         createdAt: scan.createdAt,
       },
