@@ -247,6 +247,9 @@ export const getScanHistory = async (req, res) => {
     const items = history.map((scan) => ({
       scanId: scan._id,
       status: scan.status,
+      summary: scan.summary,
+      ingredientsText: scan.ingredientsText,
+      matchedAllergens: scan.matchedAllergens,
       matchedCount: scan.matchedAllergens.length,
       createdAt: scan.createdAt,
       thumbnailUrl: scan.imageUrl,

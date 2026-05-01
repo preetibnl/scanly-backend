@@ -1,5 +1,7 @@
 import User from "../models/userModel.js";
 import mongoose from "mongoose";
+import crypto from "crypto";
+import { sendResetPasswordEmail } from "../utils/mail.js";
 
 export const signupUser = async (req, res) => {
   try {
@@ -61,20 +63,77 @@ export const loginUser = async (req, res) => {
 
 export const forgotPassword = async (req, res) => {
   try {
-    const { email, newPassword } = req.body;
+    const { email } = req.body;
 
-    if (!email || !newPassword) {
-      return res
-        .status(400)
-        .json({ message: "Email and new password are required" });
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" });
     }
 
     const user = await User.findOne({ email });
+    // Do not reveal if a user exists for this email.
     if (!user) {
-      return res.status(404).json({ message: "User not found" });
+      return res.status(200).json({
+        message: "If this email is registered, a reset link has been sent.",
+      });
+    }
+
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+    const resetBaseUrl =
+      process.env.RESET_PASSWORD_URL ||
+      process.env.FRONTEND_RESET_PASSWORD_URL ||
+      process.env.FRONTEND_APP_URL ||
+      process.env.CLIENT_URL ||
+      "foodalleryscanner://reset-password";
+    const separator = resetBaseUrl.includes("?") ? "&" : "?";
+    const resetLink = `${resetBaseUrl}${separator}token=${rawToken}&email=${encodeURIComponent(
+      user.email,
+    )}`;
+
+    user.resetPasswordTokenHash = tokenHash;
+    user.resetPasswordExpiresAt = expiresAt;
+    await user.save();
+
+    await sendResetPasswordEmail({
+      to: user.email,
+      resetLink,
+    });
+
+    return res.status(200).json({
+      message: "If this email is registered, a reset link has been sent.",
+    });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "Failed to send password reset link", error: error.message });
+  }
+};
+
+export const resetPassword = async (req, res) => {
+  try {
+    const { email, token, newPassword } = req.body;
+
+    if (!email || !token || !newPassword) {
+      return res
+        .status(400)
+        .json({ message: "Email, token and new password are required" });
+    }
+
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+    const user = await User.findOne({
+      email,
+      resetPasswordTokenHash: tokenHash,
+      resetPasswordExpiresAt: { $gt: new Date() },
+    });
+
+    if (!user) {
+      return res.status(400).json({ message: "Invalid or expired reset link" });
     }
 
     user.password = newPassword;
+    user.resetPasswordTokenHash = null;
+    user.resetPasswordExpiresAt = null;
     await user.save();
 
     return res.status(200).json({ message: "Password reset successful" });
