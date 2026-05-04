@@ -21,7 +21,7 @@ const scanSchema = new mongoose.Schema(
     ingredientsText: { type: String, default: "" },
     status: {
       type: String,
-      enum: ["safe", "unsafe"],
+      enum: ["safe", "risk", "unsafe"],
       required: true,
     },
     summary: { type: String, required: true },
