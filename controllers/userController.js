@@ -87,9 +87,9 @@ export const forgotPassword = async (req, res) => {
       process.env.CLIENT_URL ||
       "foodalleryscanner://reset-password";
     const separator = resetBaseUrl.includes("?") ? "&" : "?";
-    const resetLink = `${resetBaseUrl}${separator}token=${rawToken}&email=${encodeURIComponent(
-      user.email,
-    )}`;
+    const resetLink = `${resetBaseUrl}${separator}token=${encodeURIComponent(
+      rawToken,
+    )}&email=${encodeURIComponent(user.email)}`;
 
     user.resetPasswordTokenHash = tokenHash;
     user.resetPasswordExpiresAt = expiresAt;

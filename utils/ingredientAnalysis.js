@@ -162,7 +162,7 @@ const sanitizeAiOutput = (aiData, activeAllergies = [], ingredientsText = "") =>
   };
 
   console.log(
-    `[AI] Parsed response status=${normalizedOutput.status} matches=${normalizedOutput.matchedAllergens.length}`,
+    `[AI] step=sanitize_output status=${normalizedOutput.status} matches=${normalizedOutput.matchedAllergens.length} source=${normalizedOutput.source}`,
   );
 
   return normalizedOutput;
@@ -195,24 +195,41 @@ Rules:
 }
 `.trim();
 
+const maskOpenAiKey = (key) => {
+  const s = String(key);
+  if (s.length <= 8) {
+    return "(too_short)";
+  }
+  return `${s.slice(0, 7)}…${s.slice(-4)}`;
+};
+
 const getOpenAiKey = () => {
   const rawKey = String(process.env.OPENAI_API_KEY || "").trim();
   if (!rawKey) {
+    console.error("[AI] step=key_check status=fail reason=OPENAI_API_KEY_missing");
     throw new Error("OPENAI_API_KEY is missing");
   }
   if (!rawKey.startsWith("sk-") || rawKey.length < 40) {
+    console.error(
+      `[AI] step=key_check status=fail reason=invalid_format keyPrefix=${rawKey.slice(0, 7)} length=${rawKey.length} (expect sk-… length>=40)`,
+    );
     throw new Error(
       "OPENAI_API_KEY appears invalid. Paste the full secret key from OpenAI dashboard.",
     );
   }
+  console.log(`[AI] step=key_check status=ok keyRef=${maskOpenAiKey(rawKey)}`);
   return rawKey;
 };
 
 const analyzeWithOpenAI = async ({ allergies, ingredientsText, profileType }) => {
   const apiKey = getOpenAiKey();
-  const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+  const model = "gpt-4o-mini";
+  const reqStart = Date.now();
+  const ingredientsChars = String(ingredientsText).length;
   console.log(
-    `[AI] Request started model=${model} profileType=${profileType} allergies=${allergies.length}`,
+    `[AI] step=openai_request model=${model} profileType=${profileType} allergyCount=${allergies.length} ingredientsChars=${ingredientsChars} promptIngredientPreview="${String(ingredientsText)
+      .slice(0, 120)
+      .replace(/\s+/g, " ")}"`,
   );
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -241,53 +258,56 @@ const analyzeWithOpenAI = async ({ allergies, ingredientsText, profileType }) =>
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     const details = payload?.error?.message || "OpenAI request failed";
+    const errType = payload?.error?.type ?? "n/a";
+    const errCode = payload?.error?.code ?? "n/a";
+    console.error(
+      `[AI] step=openai_response httpStatus=${response.status} durationMs=${Date.now() - reqStart} errorType=${errType} errorCode=${errCode} message=${details}`,
+    );
     throw new Error(details);
   }
 
   const content = payload?.choices?.[0]?.message?.content;
   if (!content) {
+    console.error(
+      `[AI] step=openai_parse durationMs=${Date.now() - reqStart} reason=empty_choices_content id=${payload?.id ?? "n/a"}`,
+    );
     throw new Error("OpenAI returned empty response");
   }
 
-  console.log(`[AI] Raw response: ${content.slice(0, 700)}`);
+  console.log(
+    `[AI] step=openai_response httpStatus=${response.status} durationMs=${Date.now() - reqStart} contentChars=${content.length} preview="${content.slice(0, 500).replace(/\s+/g, " ")}"`,
+  );
 
   let parsed;
   try {
     parsed = JSON.parse(content);
-  } catch {
+  } catch (parseErr) {
+    console.error(
+      `[AI] step=openai_json_parse fail durationMs=${Date.now() - reqStart} err=${parseErr.message}`,
+    );
     throw new Error("OpenAI returned invalid JSON");
   }
 
-  return sanitizeAiOutput(parsed, allergies, ingredientsText);
+  const sanitized = sanitizeAiOutput(parsed, allergies, ingredientsText);
+  console.log(
+    `[AI] step=openai_done totalMs=${Date.now() - reqStart} resultStatus=${sanitized.status} resultSource=${sanitized.source} matches=${sanitized.matchedAllergens?.length ?? 0}`,
+  );
+  return sanitized;
 };
 
 export const analyzeIngredientsRisk = async ({ allergies, ingredientsText }) => {
-  const aiEnabled = (process.env.AI_PROVIDER || "openai").toLowerCase().trim();
+  const analyzeStart = Date.now();
   const cleanedAllergies = Array.isArray(allergies)
     ? allergies.map((item) => String(item).trim()).filter(Boolean)
     : [];
   const profileType = cleanedAllergies.length > 0 ? "user" : "default";
   const activeAllergies =
     profileType === "user" ? cleanedAllergies : defaultAllergyProfile;
+  const ingredientsChars = String(ingredientsText).length;
 
   console.log(
-    `[AI] Analyze scan profileType=${profileType} activeAllergies=${activeAllergies.join(", ")}`,
+    `[AI] pipeline:start profileType=${profileType} storedAllergyCount=${cleanedAllergies.length} activeAllergyCount=${activeAllergies.length} ingredientsChars=${ingredientsChars} activeAllergies=${activeAllergies.join(", ")}`,
   );
-
-  if (aiEnabled !== "openai") {
-    const matches = findKeywordMatches(activeAllergies, ingredientsText);
-    const status = matches.length > 0 ? "unsafe" : "safe";
-    return {
-      status,
-      summary:
-        status === "unsafe"
-          ? "Potential allergen ingredients detected. Please review before consuming."
-          : "No major allergen indicators were detected in this ingredient list.",
-      matchedAllergens: matches,
-      source: "rules",
-      usedAllergies: activeAllergies,
-    };
-  }
 
   try {
     const aiResult = await analyzeWithOpenAI({
@@ -295,14 +315,22 @@ export const analyzeIngredientsRisk = async ({ allergies, ingredientsText }) => 
       ingredientsText,
       profileType,
     });
+    console.log(
+      `[AI] pipeline:end source=${aiResult.source} status=${aiResult.status} matches=${aiResult.matchedAllergens?.length ?? 0} totalDurationMs=${Date.now() - analyzeStart}`,
+    );
     return {
       ...aiResult,
       usedAllergies: activeAllergies,
     };
   } catch (error) {
-    console.warn(`[AI] OpenAI failed, using fallback rules: ${error.message}`);
+    console.warn(
+      `[AI] pipeline:fallback source=rules reason="${error.message}" failedAfterMs=${Date.now() - analyzeStart}`,
+    );
     const matches = findKeywordMatches(activeAllergies, ingredientsText);
     const status = matches.length > 0 ? "unsafe" : "safe";
+    console.log(
+      `[AI] pipeline:end source=rules(fallback) status=${status} ruleMatches=${matches.length} totalDurationMs=${Date.now() - analyzeStart}`,
+    );
     return {
       status,
       summary:
