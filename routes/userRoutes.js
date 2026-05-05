@@ -7,6 +7,7 @@ import {
   resetPassword,
   signupUser,
   updateUserAllergies,
+  verifyResetOtp,
 } from "../controllers/userController.js";
 
 const router = express.Router();
@@ -14,6 +15,7 @@ const router = express.Router();
 router.post("/signup", signupUser);
 router.post("/login", loginUser);
 router.post("/forgot-password", forgotPassword);
+router.post("/verify-reset-otp", verifyResetOtp);
 router.post("/reset-password", resetPassword);
 router.put("/:id/allergies", updateUserAllergies);
 router.get("/:id/profile", getUserProfile);

@@ -58,3 +58,31 @@ export const sendResetPasswordEmail = async ({ to, resetLink }) => {
     `,
   });
 };
+
+export const sendResetOtpEmail = async ({ to, otp }) => {
+  const smtpTransporter = getTransporter();
+  const from = process.env.SMTP_FROM || process.env.SMTP_USER;
+
+  await smtpTransporter.sendMail({
+    from,
+    to,
+    subject: "Your Scanly password reset OTP",
+    text: [
+      "We received a request to reset your Scanly password.",
+      "",
+      `Your OTP is: ${otp}`,
+      "",
+      "This OTP expires in 10 minutes.",
+      "If you did not request this, you can ignore this email.",
+    ].join("\n"),
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.5;">
+        <h2 style="margin-bottom: 8px;">Password reset OTP</h2>
+        <p>Use this OTP to continue resetting your Scanly password:</p>
+        <p style="font-size: 28px; letter-spacing: 4px; font-weight: 700; margin: 14px 0;">${otp}</p>
+        <p style="font-size: 13px; color: #555;">This OTP expires in 10 minutes.</p>
+        <p style="font-size: 13px; color: #555;">If you did not request this, you can ignore this email.</p>
+      </div>
+    `,
+  });
+};

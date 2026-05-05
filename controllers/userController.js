@@ -1,7 +1,7 @@
 import User from "../models/userModel.js";
 import mongoose from "mongoose";
 import crypto from "crypto";
-import { sendResetPasswordEmail } from "../utils/mail.js";
+import { sendResetOtpEmail } from "../utils/mail.js";
 
 export const signupUser = async (req, res) => {
   try {
@@ -73,40 +73,75 @@ export const forgotPassword = async (req, res) => {
     // Do not reveal if a user exists for this email.
     if (!user) {
       return res.status(200).json({
-        message: "If this email is registered, a reset link has been sent.",
+        message: "If this email is registered, an OTP has been sent.",
       });
     }
 
-    const rawToken = crypto.randomBytes(32).toString("hex");
-    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
-    const resetBaseUrl =
-      process.env.RESET_PASSWORD_URL ||
-      process.env.FRONTEND_RESET_PASSWORD_URL ||
-      process.env.FRONTEND_APP_URL ||
-      process.env.CLIENT_URL ||
-      "foodalleryscanner://reset-password";
-    const separator = resetBaseUrl.includes("?") ? "&" : "?";
-    const resetLink = `${resetBaseUrl}${separator}token=${encodeURIComponent(
-      rawToken,
-    )}&email=${encodeURIComponent(user.email)}`;
+    const otp = String(Math.floor(100000 + Math.random() * 900000));
+    const otpHash = crypto.createHash("sha256").update(otp).digest("hex");
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-    user.resetPasswordTokenHash = tokenHash;
-    user.resetPasswordExpiresAt = expiresAt;
+    user.resetOtpHash = otpHash;
+    user.resetOtpExpiresAt = expiresAt;
+    user.resetPasswordTokenHash = null;
+    user.resetPasswordExpiresAt = null;
     await user.save();
 
-    await sendResetPasswordEmail({
+    await sendResetOtpEmail({
       to: user.email,
-      resetLink,
+      otp,
     });
 
     return res.status(200).json({
-      message: "If this email is registered, a reset link has been sent.",
+      message: "If this email is registered, an OTP has been sent.",
     });
   } catch (error) {
     return res
       .status(500)
-      .json({ message: "Failed to send password reset link", error: error.message });
+      .json({ message: "Failed to send password reset OTP", error: error.message });
+  }
+};
+
+export const verifyResetOtp = async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return res.status(400).json({ message: "Email and OTP are required" });
+    }
+
+    const otpHash = crypto.createHash("sha256").update(String(otp)).digest("hex");
+    const user = await User.findOne({
+      email,
+      resetOtpHash: otpHash,
+      resetOtpExpiresAt: { $gt: new Date() },
+    });
+
+    if (!user) {
+      return res.status(400).json({ message: "Invalid or expired OTP" });
+    }
+
+    const resetToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(resetToken).digest("hex");
+    const resetSessionExpiresAt = new Date(Date.now() + 15 * 60 * 1000);
+
+    user.resetPasswordTokenHash = tokenHash;
+    user.resetPasswordExpiresAt = resetSessionExpiresAt;
+    user.resetOtpHash = null;
+    user.resetOtpExpiresAt = null;
+    await user.save();
+
+    return res.status(200).json({
+      message: "OTP verified",
+      data: {
+        email: user.email,
+        token: resetToken,
+      },
+    });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "Failed to verify OTP", error: error.message });
   }
 };
 
@@ -134,6 +169,8 @@ export const resetPassword = async (req, res) => {
     user.password = newPassword;
     user.resetPasswordTokenHash = null;
     user.resetPasswordExpiresAt = null;
+    user.resetOtpHash = null;
+    user.resetOtpExpiresAt = null;
     await user.save();
 
     return res.status(200).json({ message: "Password reset successful" });
