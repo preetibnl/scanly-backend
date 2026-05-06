@@ -2,6 +2,7 @@ import express from "express";
 import multer from "multer";
 import {
   analyzeScan,
+  askAssistant,
   extractIngredientsTextFromImage,
   getScanHistory,
 } from "../controllers/scanController.js";
@@ -15,6 +16,7 @@ const upload = multer({
 });
 
 router.post("/analyze", analyzeScan);
+router.post("/assistant", askAssistant);
 router.post("/ocr", upload.single("image"), extractIngredientsTextFromImage);
 router.get("/history", getScanHistory);
 

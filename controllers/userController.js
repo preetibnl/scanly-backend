@@ -1,7 +1,10 @@
 import User from "../models/userModel.js";
 import mongoose from "mongoose";
 import crypto from "crypto";
+import bcrypt from "bcryptjs";
 import { sendResetOtpEmail } from "../utils/mail.js";
+
+const PASSWORD_SALT_ROUNDS = Number(process.env.PASSWORD_SALT_ROUNDS || 10);
 
 export const signupUser = async (req, res) => {
   try {
@@ -16,7 +19,8 @@ export const signupUser = async (req, res) => {
       return res.status(409).json({ message: "User already exists" });
     }
 
-    const user = await User.create({ name, email, password });
+    const passwordHash = await bcrypt.hash(password, PASSWORD_SALT_ROUNDS);
+    const user = await User.create({ name, email, password: passwordHash });
 
     return res.status(201).json({
       message: "Signup successful",
@@ -44,7 +48,20 @@ export const loginUser = async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
 
-    if (user.password !== password) {
+    let isPasswordValid = false;
+
+    if (String(user.password || "").startsWith("$2")) {
+      isPasswordValid = await bcrypt.compare(password, user.password);
+    } else {
+      // Backward compatibility for legacy plaintext users.
+      isPasswordValid = user.password === password;
+      if (isPasswordValid) {
+        user.password = await bcrypt.hash(password, PASSWORD_SALT_ROUNDS);
+        await user.save();
+      }
+    }
+
+    if (!isPasswordValid) {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
@@ -166,7 +183,7 @@ export const resetPassword = async (req, res) => {
       return res.status(400).json({ message: "Invalid or expired reset link" });
     }
 
-    user.password = newPassword;
+    user.password = await bcrypt.hash(newPassword, PASSWORD_SALT_ROUNDS);
     user.resetPasswordTokenHash = null;
     user.resetPasswordExpiresAt = null;
     user.resetOtpHash = null;

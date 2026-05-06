@@ -4,6 +4,7 @@ import User from "../models/userModel.js";
 import { extractIngredientsFromImage } from "../utils/ocr.js";
 import { analyzeIngredientsRisk } from "../utils/ingredientAnalysis.js";
 import { extractIngredientItems } from "../utils/ingredients.js";
+import { askIngredientAssistant } from "../utils/assistant.js";
 
 export const extractIngredientsTextFromImage = async (req, res) => {
   const flowStart = Date.now();
@@ -198,6 +199,64 @@ export const getScanHistory = async (req, res) => {
     return res
       .status(500)
       .json({ message: "Failed to fetch scan history", error: error.message });
+  }
+};
+
+export const askAssistant = async (req, res) => {
+  const flowStart = Date.now();
+  try {
+    const { message = "", allergies = [], history = [] } = req.body;
+    const normalizedMessage = String(message).trim();
+
+    if (!normalizedMessage) {
+      return res.status(400).json({ message: "message is required" });
+    }
+
+    const normalizedAllergies = Array.isArray(allergies)
+      ? allergies.map((item) => String(item).trim()).filter(Boolean)
+      : [];
+    const normalizedHistory = Array.isArray(history)
+      ? history
+          .map((item) => ({
+            role: item?.role === "assistant" ? "assistant" : "user",
+            content: String(item?.content || "").trim(),
+          }))
+          .filter((item) => item.content)
+          .slice(-8)
+      : [];
+
+    console.log(
+      `[ASSISTANT] POST /api/scans/assistant step=received messageChars=${normalizedMessage.length} allergyCount=${normalizedAllergies.length} historyCount=${normalizedHistory.length}`,
+    );
+
+    const response = await askIngredientAssistant({
+      question: normalizedMessage,
+      allergies: normalizedAllergies,
+      history: normalizedHistory,
+    });
+
+    console.log(
+      `[ASSISTANT] POST /api/scans/assistant step=done source=${response.source} durationMs=${Date.now() - flowStart}`,
+    );
+    console.log(
+      `[ASSISTANT] POST /api/scans/assistant step=response_preview chars=${response.answer.length} preview="${response.answer
+        .slice(0, 180)
+        .replace(/\s+/g, " ")}"`,
+    );
+
+    return res.status(200).json({
+      data: {
+        answer: response.answer,
+        source: response.source,
+      },
+    });
+  } catch (error) {
+    console.error(
+      `[ASSISTANT] POST /api/scans/assistant step=error durationMs=${Date.now() - flowStart} message=${error.message}`,
+    );
+    return res
+      .status(500)
+      .json({ message: "Failed to get assistant response", error: error.message });
   }
 };
 
