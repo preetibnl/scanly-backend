@@ -19,6 +19,7 @@ const scanSchema = new mongoose.Schema(
     },
     imageUrl: { type: String, default: "" },
     ingredientsText: { type: String, default: "" },
+    ingredientItems: { type: [String], default: [] },
     status: {
       type: String,
       enum: ["safe", "risk", "unsafe"],

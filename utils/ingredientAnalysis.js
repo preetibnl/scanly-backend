@@ -223,7 +223,7 @@ const getOpenAiKey = () => {
 
 const analyzeWithOpenAI = async ({ allergies, ingredientsText, profileType }) => {
   const apiKey = getOpenAiKey();
-  const model = "gpt-4o-mini";
+  const model = String(process.env.OPENAI_MODEL || "gpt-4o-mini").trim();
   const reqStart = Date.now();
   const ingredientsChars = String(ingredientsText).length;
   console.log(
@@ -300,13 +300,16 @@ export const analyzeIngredientsRisk = async ({ allergies, ingredientsText }) => 
   const cleanedAllergies = Array.isArray(allergies)
     ? allergies.map((item) => String(item).trim()).filter(Boolean)
     : [];
-  const profileType = cleanedAllergies.length > 0 ? "user" : "default";
+  const useUserAllergies =
+    String(process.env.USE_USER_ALLERGIES || "false").toLowerCase() === "true";
+  const profileType =
+    useUserAllergies && cleanedAllergies.length > 0 ? "user" : "default";
   const activeAllergies =
     profileType === "user" ? cleanedAllergies : defaultAllergyProfile;
   const ingredientsChars = String(ingredientsText).length;
 
   console.log(
-    `[AI] pipeline:start profileType=${profileType} storedAllergyCount=${cleanedAllergies.length} activeAllergyCount=${activeAllergies.length} ingredientsChars=${ingredientsChars} activeAllergies=${activeAllergies.join(", ")}`,
+    `[AI] pipeline:start useUserAllergies=${useUserAllergies} profileType=${profileType} storedAllergyCount=${cleanedAllergies.length} activeAllergyCount=${activeAllergies.length} ingredientsChars=${ingredientsChars} activeAllergies=${activeAllergies.join(", ")}`,
   );
 
   try {

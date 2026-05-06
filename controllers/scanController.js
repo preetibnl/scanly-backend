@@ -3,6 +3,7 @@ import Scan from "../models/scanModel.js";
 import User from "../models/userModel.js";
 import { extractIngredientsFromImage } from "../utils/ocr.js";
 import { analyzeIngredientsRisk } from "../utils/ingredientAnalysis.js";
+import { extractIngredientItems } from "../utils/ingredients.js";
 
 export const extractIngredientsTextFromImage = async (req, res) => {
   const flowStart = Date.now();
@@ -101,6 +102,11 @@ export const analyzeScan = async (req, res) => {
     });
     const riskEngineMs = Date.now() - analyzeT0;
 
+    const ingredientItems = extractIngredientItems(ingredientsText);
+    console.log(
+      `[AI] POST /api/scans/analyze step=ingredient_list items=${ingredientItems.length}`,
+    );
+
     console.log(
       `[AI] POST /api/scans/analyze step=analysis_done source=${analysis.source} status=${analysis.status} matchedCount=${analysis.matchedAllergens?.length ?? 0} fallbackReason=${analysis.fallbackReason ?? "n/a"} riskEngineMs=${riskEngineMs}`,
     );
@@ -109,6 +115,7 @@ export const analyzeScan = async (req, res) => {
       userId,
       imageUrl,
       ingredientsText,
+      ingredientItems,
       status: analysis.status,
       summary: analysis.summary,
       matchedAllergens: analysis.matchedAllergens,
@@ -124,6 +131,7 @@ export const analyzeScan = async (req, res) => {
         status: scan.status,
         summary: scan.summary,
         usedAllergies: analysis.usedAllergies || user.allergies,
+        ingredientItems: scan.ingredientItems,
         matchedAllergens: scan.matchedAllergens,
         analysisSource: analysis.source,
         createdAt: scan.createdAt,
@@ -168,6 +176,7 @@ export const getScanHistory = async (req, res) => {
       status: scan.status,
       summary: scan.summary,
       ingredientsText: scan.ingredientsText,
+      ingredientItems: scan.ingredientItems,
       matchedAllergens: scan.matchedAllergens,
       matchedCount: scan.matchedAllergens.length,
       createdAt: scan.createdAt,
