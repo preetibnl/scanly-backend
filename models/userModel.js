@@ -23,6 +23,26 @@ const userSchema = new mongoose.Schema(
       type: String,
       default: "free",
     },
+    stripeCustomerId: {
+      type: String,
+      default: null,
+    },
+    stripeSubscriptionId: {
+      type: String,
+      default: null,
+    },
+    subscriptionStatus: {
+      type: String,
+      default: null,
+    },
+    subscriptionCurrentPeriodEnd: {
+      type: Date,
+      default: null,
+    },
+    subscriptionCancelAtPeriodEnd: {
+      type: Boolean,
+      default: false,
+    },
     resetPasswordTokenHash: {
       type: String,
       default: null,
