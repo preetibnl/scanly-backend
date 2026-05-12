@@ -2,6 +2,7 @@ import express from "express";
 import {
   deleteUser,
   forgotPassword,
+  getUsers,
   getUserProfile,
   loginUser,
   resetPassword,
@@ -12,6 +13,7 @@ import {
 
 const router = express.Router();
 
+router.get("/", getUsers);
 router.post("/signup", signupUser);
 router.post("/login", loginUser);
 router.post("/forgot-password", forgotPassword);

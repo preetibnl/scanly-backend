@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { sendResetOtpEmail } from "../utils/mail.js";
+import { getIo } from "../socket.js";
 
 const PASSWORD_SALT_ROUNDS = Number(process.env.PASSWORD_SALT_ROUNDS || 10);
 
@@ -21,6 +22,16 @@ export const signupUser = async (req, res) => {
 
     const passwordHash = await bcrypt.hash(password, PASSWORD_SALT_ROUNDS);
     const user = await User.create({ name, email, password: passwordHash });
+    const io = getIo();
+    if (io) {
+      io.emit("user:registered", {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        plan: user.plan || "free",
+        createdAt: user.createdAt,
+      });
+    }
 
     return res.status(201).json({
       message: "Signup successful",
@@ -32,6 +43,29 @@ export const signupUser = async (req, res) => {
     });
   } catch (error) {
     return res.status(500).json({ message: "Signup failed", error: error.message });
+  }
+};
+
+export const getUsers = async (_req, res) => {
+  try {
+    const users = await User.find()
+      .sort({ createdAt: -1 })
+      .select("name email plan createdAt")
+      .lean();
+
+    return res.status(200).json({
+      data: users.map((user) => ({
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        plan: user.plan || "free",
+        createdAt: user.createdAt,
+      })),
+    });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "Failed to fetch users", error: error.message });
   }
 };
 
