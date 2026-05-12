@@ -5,6 +5,8 @@ import http from "http";
 import connectDB from "./databaseConnection/database.js";
 import { logStripeStartupProbe } from "./controllers/stripeController.js";
 import userRoutes from "./routes/userRoutes.js";
+import adminRoutes from "./routes/adminRoutes.js";
+import { ensureAdminAccount } from "./controllers/adminController.js";
 import s3Routes from "./routes/s3Routes.js";
 import scanRoutes from "./routes/scanRoutes.js";
 import stripeRoutes from "./routes/stripeRoutes.js";
@@ -33,6 +35,7 @@ app.use(
 );
 
 app.use(express.json());
+app.use("/api/admin", adminRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/s3", s3Routes);
 app.use("/api/scans", scanRoutes);
@@ -41,6 +44,7 @@ app.use("/api/stripe", stripeRoutes);
 const startServer = async () => {
   try {
     await connectDB();
+    await ensureAdminAccount();
     await logStripeStartupProbe();
     initSocket(server);
     server.listen(port, () => {
