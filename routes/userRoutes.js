@@ -2,6 +2,8 @@ import express from "express";
 import {
   deleteUser,
   forgotPassword,
+  getAdminUserDetails,
+  getAdminOverview,
   getUsers,
   getUserProfile,
   loginUser,
@@ -13,6 +15,8 @@ import {
 
 const router = express.Router();
 
+router.get("/admin/overview", getAdminOverview);
+router.get("/:id/admin-details", getAdminUserDetails);
 router.get("/", getUsers);
 router.post("/signup", signupUser);
 router.post("/login", loginUser);

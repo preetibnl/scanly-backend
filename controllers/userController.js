@@ -1,4 +1,5 @@
 import User from "../models/userModel.js";
+import Scan from "../models/scanModel.js";
 import mongoose from "mongoose";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
@@ -31,6 +32,7 @@ export const signupUser = async (req, res) => {
         plan: user.plan || "free",
         createdAt: user.createdAt,
       });
+      io.emit("dashboard:updated");
     }
 
     return res.status(201).json({
@@ -52,6 +54,17 @@ export const getUsers = async (_req, res) => {
       .sort({ createdAt: -1 })
       .select("name email plan createdAt")
       .lean();
+    const scanCounts = await Scan.aggregate([
+      {
+        $group: {
+          _id: "$userId",
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+    const scanCountMap = new Map(
+      scanCounts.map((item) => [String(item._id), Number(item.count || 0)])
+    );
 
     return res.status(200).json({
       data: users.map((user) => ({
@@ -60,12 +73,170 @@ export const getUsers = async (_req, res) => {
         email: user.email,
         plan: user.plan || "free",
         createdAt: user.createdAt,
+        scanCount: scanCountMap.get(String(user._id)) || 0,
       })),
     });
   } catch (error) {
     return res
       .status(500)
       .json({ message: "Failed to fetch users", error: error.message });
+  }
+};
+
+export const getAdminUserDetails = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid user id" });
+    }
+
+    const user = await User.findById(id)
+      .select(
+        "name email plan allergies stripeCustomerId stripeSubscriptionId subscriptionStatus subscriptionCurrentPeriodEnd subscriptionCancelAtPeriodEnd createdAt updatedAt"
+      )
+      .lean();
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const [scanStats, recentScans] = await Promise.all([
+      Scan.aggregate([
+        { $match: { userId: new mongoose.Types.ObjectId(id) } },
+        {
+          $group: {
+            _id: "$status",
+            count: { $sum: 1 },
+          },
+        },
+      ]),
+      Scan.find({ userId: id })
+        .sort({ createdAt: -1 })
+        .limit(8)
+        .select("status summary createdAt")
+        .lean(),
+    ]);
+
+    const statsMap = {
+      safe: 0,
+      risk: 0,
+      unsafe: 0,
+    };
+    scanStats.forEach((item) => {
+      const key = String(item._id || "").toLowerCase();
+      if (Object.prototype.hasOwnProperty.call(statsMap, key)) {
+        statsMap[key] = Number(item.count || 0);
+      }
+    });
+
+    return res.status(200).json({
+      data: {
+        user: {
+          ...user,
+          plan: user.plan || "free",
+        },
+        scans: {
+          total: statsMap.safe + statsMap.risk + statsMap.unsafe,
+          safe: statsMap.safe,
+          risk: statsMap.risk,
+          unsafe: statsMap.unsafe,
+          recent: recentScans,
+        },
+      },
+    });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "Failed to fetch user details", error: error.message });
+  }
+};
+
+export const getAdminOverview = async (_req, res) => {
+  try {
+    const [totalUsers, premiumActive, totalScans, riskAlerts, recentScans, subscriptions] =
+      await Promise.all([
+        User.countDocuments(),
+        User.countDocuments({
+          $or: [
+            { plan: { $regex: /^premium$/i } },
+            { subscriptionStatus: { $regex: /^active$/i } },
+          ],
+        }),
+        Scan.countDocuments(),
+        Scan.countDocuments({ status: { $in: ["risk", "unsafe"] } }),
+        Scan.find()
+          .sort({ createdAt: -1 })
+          .limit(8)
+          .populate("userId", "name email")
+          .lean(),
+        User.find({
+          $or: [
+            { subscriptionStatus: { $in: ["active", "past_due", "past due", "canceled", "cancelled"] } },
+            { plan: { $regex: /^premium$/i } },
+          ],
+        })
+          .sort({ updatedAt: -1 })
+          .limit(12)
+          .select("name email plan subscriptionStatus subscriptionCurrentPeriodEnd")
+          .lean(),
+      ]);
+
+    const subscriptionSummary = {
+      active: subscriptions.filter(
+        (u) =>
+          String(u.subscriptionStatus || "").toLowerCase() === "active" ||
+          String(u.plan || "").toLowerCase() === "premium"
+      ).length,
+      pastDue: subscriptions.filter((u) =>
+        ["past_due", "past due"].includes(String(u.subscriptionStatus || "").toLowerCase())
+      ).length,
+      canceled: subscriptions.filter((u) =>
+        ["canceled", "cancelled"].includes(String(u.subscriptionStatus || "").toLowerCase())
+      ).length,
+    };
+
+    return res.status(200).json({
+      data: {
+        cards: {
+          totalUsers,
+          premiumActive,
+          totalScans,
+          riskAlerts,
+        },
+        subscriptionSummary,
+        recentScans: recentScans.map((scan) => ({
+          id: scan._id,
+          user: scan.userId?.name || "Unknown",
+          email: scan.userId?.email || "",
+          result: scan.status,
+          summary: scan.summary,
+          date: scan.createdAt,
+        })),
+        subscriptionItems: subscriptions.map((u) => ({
+          id: u._id,
+          user: u.name,
+          plan: String(u.plan || "Free").replace(/^./, (ch) => ch.toUpperCase()),
+          status:
+            String(u.subscriptionStatus || "").toLowerCase() === "active"
+              ? "Active"
+              : String(u.subscriptionStatus || "").toLowerCase() === "past_due" ||
+                  String(u.subscriptionStatus || "").toLowerCase() === "past due"
+                ? "Past Due"
+                : String(u.subscriptionStatus || "").toLowerCase() === "canceled" ||
+                    String(u.subscriptionStatus || "").toLowerCase() === "cancelled"
+                  ? "Canceled"
+                  : String(u.plan || "").toLowerCase() === "premium"
+                    ? "Active"
+                    : "Inactive",
+          renewsOn: u.subscriptionCurrentPeriodEnd || null,
+        })),
+      },
+    });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "Failed to fetch dashboard overview", error: error.message });
   }
 };
 

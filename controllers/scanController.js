@@ -5,6 +5,7 @@ import { extractIngredientsFromImage } from "../utils/ocr.js";
 import { analyzeIngredientsRisk } from "../utils/ingredientAnalysis.js";
 import { extractIngredientItems } from "../utils/ingredients.js";
 import { askIngredientAssistant } from "../utils/assistant.js";
+import { getIo } from "../socket.js";
 
 export const extractIngredientsTextFromImage = async (req, res) => {
   const flowStart = Date.now();
@@ -86,7 +87,7 @@ export const analyzeScan = async (req, res) => {
       `[AI] POST /api/scans/analyze step=received userId=${userId} hasImageUrl=${hasImage} imageUrlChars=${String(imageUrl).length} ingredientsChars=${ingredientsChars}`,
     );
 
-    const user = await User.findById(userId).select("allergies");
+    const user = await User.findById(userId).select("allergies name email");
     if (!user) {
       console.warn(`[AI] POST /api/scans/analyze → 404 user not found userId=${userId}`);
       return res.status(404).json({ message: "User not found" });
@@ -125,6 +126,20 @@ export const analyzeScan = async (req, res) => {
     console.log(
       `[AI] POST /api/scans/analyze step=persisted scanId=${scan._id} totalDurationMs=${Date.now() - flowStart}`,
     );
+
+    const io = getIo();
+    if (io) {
+      io.emit("scan:created", {
+        id: scan._id,
+        userId,
+        userName: user?.name || "Unknown",
+        userEmail: user?.email || "",
+        status: scan.status,
+        summary: scan.summary,
+        createdAt: scan.createdAt,
+      });
+      io.emit("dashboard:updated");
+    }
 
     return res.status(200).json({
       data: {
