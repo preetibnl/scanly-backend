@@ -168,6 +168,15 @@ const sanitizeAiOutput = (aiData, activeAllergies = [], ingredientsText = "") =>
   return normalizedOutput;
 };
 
+/** Drop AI rows that reference allergies outside the user's active profile (defense in depth). */
+const filterMatchesToProfile = (matches, profileAllergies) => {
+  if (!Array.isArray(matches) || !Array.isArray(profileAllergies) || profileAllergies.length === 0) {
+    return matches;
+  }
+  const allowed = new Set(profileAllergies.map((a) => String(a).trim().toLowerCase()).filter(Boolean));
+  return matches.filter((m) => allowed.has(String(m?.allergy || "").trim().toLowerCase()));
+};
+
 const buildPrompt = ({ allergies, ingredientsText, profileType }) => `
 You are a food-allergy ingredient risk analyzer.
 Return ONLY valid JSON. Do not include markdown.
@@ -300,16 +309,14 @@ export const analyzeIngredientsRisk = async ({ allergies, ingredientsText }) => 
   const cleanedAllergies = Array.isArray(allergies)
     ? allergies.map((item) => String(item).trim()).filter(Boolean)
     : [];
-  const useUserAllergies =
-    String(process.env.USE_USER_ALLERGIES || "false").toLowerCase() === "true";
-  const profileType =
-    useUserAllergies && cleanedAllergies.length > 0 ? "user" : "default";
-  const activeAllergies =
-    profileType === "user" ? cleanedAllergies : defaultAllergyProfile;
+  const hasUserAllergies = cleanedAllergies.length > 0;
+  const profileType = hasUserAllergies ? "user" : "default";
+  const activeAllergies = hasUserAllergies ? cleanedAllergies : defaultAllergyProfile;
+  const usedAllergiesForResponse = hasUserAllergies ? cleanedAllergies : defaultAllergyProfile;
   const ingredientsChars = String(ingredientsText).length;
 
   console.log(
-    `[AI] pipeline:start useUserAllergies=${useUserAllergies} profileType=${profileType} storedAllergyCount=${cleanedAllergies.length} activeAllergyCount=${activeAllergies.length} ingredientsChars=${ingredientsChars} activeAllergies=${activeAllergies.join(", ")}`,
+    `[AI] pipeline:start profileType=${profileType} storedAllergyCount=${cleanedAllergies.length} activeAllergyCount=${activeAllergies.length} ingredientsChars=${ingredientsChars} activeAllergies=${activeAllergies.join(", ")}`,
   );
 
   try {
@@ -318,12 +325,33 @@ export const analyzeIngredientsRisk = async ({ allergies, ingredientsText }) => 
       ingredientsText,
       profileType,
     });
+    const matchedAllergens = hasUserAllergies
+      ? filterMatchesToProfile(aiResult.matchedAllergens, cleanedAllergies)
+      : aiResult.matchedAllergens;
+
+    let reconciledStatus = aiResult.status;
+    let summary = aiResult.summary;
+    if (hasUserAllergies) {
+      if (matchedAllergens.length === 0) {
+        reconciledStatus = "safe";
+        summary = "No matching allergens found for your profile.";
+      } else {
+        const hasHigh = matchedAllergens.some(
+          (m) => String(m?.riskLevel || "medium").toLowerCase() !== "low",
+        );
+        reconciledStatus = hasHigh ? "unsafe" : "risk";
+      }
+    }
+
     console.log(
-      `[AI] pipeline:end source=${aiResult.source} status=${aiResult.status} matches=${aiResult.matchedAllergens?.length ?? 0} totalDurationMs=${Date.now() - analyzeStart}`,
+      `[AI] pipeline:end source=${aiResult.source} status=${reconciledStatus} matches=${matchedAllergens?.length ?? 0} totalDurationMs=${Date.now() - analyzeStart}`,
     );
     return {
       ...aiResult,
-      usedAllergies: activeAllergies,
+      status: reconciledStatus,
+      summary,
+      matchedAllergens,
+      usedAllergies: usedAllergiesForResponse,
     };
   } catch (error) {
     console.warn(
@@ -343,7 +371,7 @@ export const analyzeIngredientsRisk = async ({ allergies, ingredientsText }) => 
       matchedAllergens: matches,
       source: "rules",
       fallbackReason: error.message,
-      usedAllergies: activeAllergies,
+      usedAllergies: usedAllergiesForResponse,
     };
   }
 };

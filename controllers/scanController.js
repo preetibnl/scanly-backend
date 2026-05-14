@@ -146,7 +146,7 @@ export const analyzeScan = async (req, res) => {
         scanId: scan._id,
         status: scan.status,
         summary: scan.summary,
-        usedAllergies: analysis.usedAllergies || user.allergies,
+        usedAllergies: analysis.usedAllergies ?? user.allergies ?? [],
         ingredientItems: scan.ingredientItems,
         matchedAllergens: scan.matchedAllergens,
         analysisSource: analysis.source,
