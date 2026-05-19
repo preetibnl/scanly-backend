@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import http from "http";
+import os from "os";
 import connectDB from "./databaseConnection/database.js";
 import { logStripeStartupProbe } from "./controllers/stripeController.js";
 import userRoutes from "./routes/userRoutes.js";
@@ -47,8 +48,17 @@ const startServer = async () => {
     await ensureAdminAccount();
     await logStripeStartupProbe();
     initSocket(server);
-    server.listen(port, () => {
-      console.log(`Server is running on port ${port}`);
+    server.listen(port, "0.0.0.0", () => {
+      console.log(`Server is running on http://0.0.0.0:${port}`);
+      const lanIps = Object.values(os.networkInterfaces())
+        .flat()
+        .filter((entry) => entry?.family === "IPv4" && !entry.internal)
+        .map((entry) => entry.address);
+      if (lanIps.length > 0) {
+        console.log(
+          `Phone API base (same Wi‑Fi): ${lanIps.map((ip) => `http://${ip}:${port}`).join(", ")}`,
+        );
+      }
     });
   } catch (error) {
     console.log(error);

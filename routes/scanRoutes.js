@@ -15,6 +15,10 @@ const upload = multer({
   },
 });
 
+router.get("/health", (_req, res) => {
+  res.status(200).json({ ok: true, service: "scans" });
+});
+
 router.post("/analyze", analyzeScan);
 router.post("/assistant", askAssistant);
 router.post("/ocr", upload.single("image"), extractIngredientsTextFromImage);
