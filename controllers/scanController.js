@@ -127,6 +127,23 @@ export const analyzeScan = async (req, res) => {
       `[AI] POST /api/scans/analyze step=persisted scanId=${scan._id} totalDurationMs=${Date.now() - flowStart}`,
     );
 
+    const responseBody = {
+      data: {
+        scanId: scan._id,
+        status: scan.status,
+        summary: scan.summary,
+        usedAllergies: analysis.usedAllergies ?? user.allergies ?? [],
+        ingredientItems: scan.ingredientItems,
+        matchedAllergens: scan.matchedAllergens,
+        analysisSource: analysis.source,
+        createdAt: scan.createdAt,
+      },
+    };
+
+    console.log(
+      `[AI] POST /api/scans/analyze step=response_ok scanId=${scan._id} status=${scan.status}`,
+    );
+
     const io = getIo();
     if (io) {
       io.emit("scan:created", {
@@ -141,18 +158,7 @@ export const analyzeScan = async (req, res) => {
       io.emit("dashboard:updated");
     }
 
-    return res.status(200).json({
-      data: {
-        scanId: scan._id,
-        status: scan.status,
-        summary: scan.summary,
-        usedAllergies: analysis.usedAllergies ?? user.allergies ?? [],
-        ingredientItems: scan.ingredientItems,
-        matchedAllergens: scan.matchedAllergens,
-        analysisSource: analysis.source,
-        createdAt: scan.createdAt,
-      },
-    });
+    return res.status(200).json(responseBody);
   } catch (error) {
     console.error(
       `[AI] POST /api/scans/analyze step=error durationMs=${Date.now() - flowStart} message=${error.message}`,

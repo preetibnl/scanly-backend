@@ -24,8 +24,14 @@ const extractWithGoogleVision = async (imageBuffer) => {
   }
 
   const gvStart = Date.now();
+  const bufferBytes = imageBuffer?.length ?? 0;
+  if (bufferBytes > 1_500_000) {
+    console.warn(
+      `[OCR] step=large_image bufferBytes=${bufferBytes} hint=photos_over_1.5MB_slow_vision; lower_camera_quality_on_client`,
+    );
+  }
   console.log(
-    `[OCR] step=google_vision_request bufferBytes=${imageBuffer?.length ?? 0} endpoint=images:annotate`,
+    `[OCR] step=google_vision_request bufferBytes=${bufferBytes} endpoint=images:annotate`,
   );
 
   const response = await fetch(`${VISION_API_URL}?key=${encodeURIComponent(apiKey)}`, {
