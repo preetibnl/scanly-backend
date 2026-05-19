@@ -5,6 +5,7 @@ import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { sendResetOtpEmail } from "../utils/mail.js";
 import { getIo } from "../socket.js";
+import { signUserToken } from "../utils/jwt.js";
 
 const PASSWORD_SALT_ROUNDS = Number(process.env.PASSWORD_SALT_ROUNDS || 10);
 
@@ -270,8 +271,11 @@ export const loginUser = async (req, res) => {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
+    const token = signUserToken(user);
+
     return res.status(200).json({
       message: "Login successful",
+      token,
       user: {
         id: user._id,
         name: user.name,
@@ -280,6 +284,29 @@ export const loginUser = async (req, res) => {
     });
   } catch (error) {
     return res.status(500).json({ message: "Login failed", error: error.message });
+  }
+};
+
+export const getCurrentUserMe = async (req, res) => {
+  try {
+    const user = await User.findById(req.userId).select("name email allergies plan");
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    return res.status(200).json({
+      data: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        allergies: user.allergies ?? [],
+        plan: user.plan || "free",
+      },
+    });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "Failed to load session", error: error.message });
   }
 };
 

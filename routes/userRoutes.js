@@ -4,6 +4,7 @@ import {
   forgotPassword,
   getAdminUserDetails,
   getAdminOverview,
+  getCurrentUserMe,
   getUsers,
   getUserProfile,
   loginUser,
@@ -12,19 +13,30 @@ import {
   updateUserAllergies,
   verifyResetOtp,
 } from "../controllers/userController.js";
+import {
+  authenticateAdmin,
+  authenticateUser,
+  requireSelfUserId,
+} from "../middleware/auth.js";
 
 const router = express.Router();
 
-router.get("/admin/overview", getAdminOverview);
-router.get("/:id/admin-details", getAdminUserDetails);
-router.get("/", getUsers);
+// Public auth
 router.post("/signup", signupUser);
 router.post("/login", loginUser);
 router.post("/forgot-password", forgotPassword);
 router.post("/verify-reset-otp", verifyResetOtp);
 router.post("/reset-password", resetPassword);
-router.put("/:id/allergies", updateUserAllergies);
-router.get("/:id/profile", getUserProfile);
-router.delete("/:id", deleteUser);
+
+// Authenticated user
+router.get("/me", authenticateUser, getCurrentUserMe);
+router.put("/:id/allergies", authenticateUser, requireSelfUserId("id"), updateUserAllergies);
+router.get("/:id/profile", authenticateUser, requireSelfUserId("id"), getUserProfile);
+router.delete("/:id", authenticateUser, requireSelfUserId("id"), deleteUser);
+
+// Admin only (same paths as before for scanly-web compatibility)
+router.get("/admin/overview", authenticateAdmin, getAdminOverview);
+router.get("/:id/admin-details", authenticateAdmin, getAdminUserDetails);
+router.get("/", authenticateAdmin, getUsers);
 
 export default router;

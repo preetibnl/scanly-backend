@@ -415,11 +415,7 @@ export const createCheckoutSession = async (req, res) => {
   const base = resolvedBase.base;
   console.log(`[Stripe] Checkout return URLs use base (${resolvedBase.source}): ${base}`);
 
-  const { userId } = req.body || {};
-  if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
-    return res.status(400).json({ message: "Valid userId is required" });
-  }
-
+  const userId = req.userId;
   const user = await User.findById(userId);
   if (!user) {
     return res.status(404).json({ message: "User not found" });
@@ -479,11 +475,7 @@ export const createPortalSession = async (req, res) => {
   const base = resolvedBase.base;
   console.log(`[Stripe] Portal return URL uses base (${resolvedBase.source}): ${base}`);
 
-  const { userId } = req.body || {};
-  if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
-    return res.status(400).json({ message: "Valid userId is required" });
-  }
-
+  const userId = req.userId;
   const user = await User.findById(userId);
   if (!user?.stripeCustomerId) {
     console.log(`[Stripe] createPortalSession: user ${userId} has no stripeCustomerId`);

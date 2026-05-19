@@ -60,12 +60,8 @@ export const extractIngredientsTextFromImage = async (req, res) => {
 export const analyzeScan = async (req, res) => {
   const flowStart = Date.now();
   try {
-    const { userId, imageUrl = "", ingredientsText = "" } = req.body;
-
-    if (!userId) {
-      console.warn("[AI] POST /api/scans/analyze → 400 userId missing");
-      return res.status(400).json({ message: "userId is required" });
-    }
+    const userId = req.userId;
+    const { imageUrl = "", ingredientsText = "" } = req.body;
 
     if (!imageUrl && !ingredientsText) {
       console.warn(
@@ -174,15 +170,8 @@ export const analyzeScan = async (req, res) => {
 
 export const getScanHistory = async (req, res) => {
   try {
-    const { userId, page = 1, limit = 10 } = req.query;
-
-    if (!userId) {
-      return res.status(400).json({ message: "userId is required" });
-    }
-
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
-      return res.status(400).json({ message: "Invalid user id" });
-    }
+    const userId = req.userId;
+    const { page = 1, limit = 10 } = req.query;
 
     const parsedPage = Math.max(Number(page) || 1, 1);
     const parsedLimit = Math.min(Math.max(Number(limit) || 10, 1), 50);

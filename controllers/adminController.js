@@ -1,5 +1,6 @@
 import bcrypt from "bcryptjs";
 import Admin from "../models/adminModel.js";
+import { signAdminToken } from "../utils/jwt.js";
 
 const PASSWORD_SALT_ROUNDS = Number(process.env.PASSWORD_SALT_ROUNDS || 10);
 
@@ -53,8 +54,11 @@ export const loginAdmin = async (req, res) => {
       return res.status(401).json({ message: "Invalid admin credentials. Please check email and password." });
     }
 
+    const token = signAdminToken(admin);
+
     return res.status(200).json({
       message: "Authenticated",
+      token,
       data: { email: admin.email },
     });
   } catch (error) {
@@ -65,7 +69,8 @@ export const loginAdmin = async (req, res) => {
 
 export const changeAdminPassword = async (req, res) => {
   try {
-    const { email, currentPassword, newPassword } = req.body;
+    const { currentPassword, newPassword } = req.body;
+    const email = normalizeEmail(req.adminEmail || req.body?.email);
 
     if (!email || !currentPassword || !newPassword) {
       return res.status(400).json({ message: "Email, current password, and new password are required" });
@@ -76,7 +81,7 @@ export const changeAdminPassword = async (req, res) => {
       return res.status(400).json({ message: "New password must be at least 8 characters" });
     }
 
-    const admin = await Admin.findOne({ email: normalizeEmail(email) });
+    const admin = await Admin.findOne({ email });
     if (!admin || !admin.passwordHash) {
       return res.status(401).json({ message: "Invalid credentials" });
     }

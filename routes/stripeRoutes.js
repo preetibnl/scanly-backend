@@ -8,6 +8,7 @@ import {
   renderReturnSuccess,
   verifyStripeConnection,
 } from "../controllers/stripeController.js";
+import { authenticateUser, requireSelfUserId } from "../middleware/auth.js";
 
 const router = express.Router();
 
@@ -17,8 +18,13 @@ router.get("/return/success", renderReturnSuccess);
 router.get("/return/cancel", renderReturnCancel);
 router.get("/return/portal", renderPortalReturn);
 
-router.post("/create-checkout-session", createCheckoutSession);
-router.post("/create-portal-session", createPortalSession);
-router.get("/billing-summary/:userId", getBillingSummary);
+router.post("/create-checkout-session", authenticateUser, createCheckoutSession);
+router.post("/create-portal-session", authenticateUser, createPortalSession);
+router.get(
+  "/billing-summary/:userId",
+  authenticateUser,
+  requireSelfUserId("userId"),
+  getBillingSummary,
+);
 
 export default router;
