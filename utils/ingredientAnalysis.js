@@ -44,16 +44,6 @@ const allergyKeywordMap = {
   eggs: ["egg", "eggs", "albumin", "egg white", "egg yolk"],
 };
 
-const defaultAllergyProfile = [
-  "milk",
-  "nuts",
-  "gluten",
-  "soy",
-  "eggs",
-  "peanut",
-  "tree nuts",
-];
-
 const normalizeSearchText = (value = "") =>
   value
     .toLowerCase()
@@ -184,8 +174,8 @@ Return ONLY valid JSON. Do not include markdown.
 Input allergies: ${JSON.stringify(allergies)}
 Allergy mode: ${
   profileType === "user"
-    ? "Use these exact user allergies."
-    : "No user allergies were selected. Assess against common major allergens."
+    ? "Use these exact user allergies for matching."
+    : "The user has not selected any allergies on their profile. Do not flag personal allergen matches. Return status \"safe\", matchedAllergens as an empty array [], and a brief summary describing the ingredient list only (no personal allergy warnings)."
 }
 Input ingredients text: ${JSON.stringify(ingredientsText)}
 
@@ -310,9 +300,9 @@ export const analyzeIngredientsRisk = async ({ allergies, ingredientsText }) => 
     ? allergies.map((item) => String(item).trim()).filter(Boolean)
     : [];
   const hasUserAllergies = cleanedAllergies.length > 0;
-  const profileType = hasUserAllergies ? "user" : "default";
-  const activeAllergies = hasUserAllergies ? cleanedAllergies : defaultAllergyProfile;
-  const usedAllergiesForResponse = hasUserAllergies ? cleanedAllergies : defaultAllergyProfile;
+  const profileType = hasUserAllergies ? "user" : "none";
+  const activeAllergies = hasUserAllergies ? cleanedAllergies : [];
+  const usedAllergiesForResponse = cleanedAllergies;
   const ingredientsChars = String(ingredientsText).length;
 
   console.log(
@@ -327,7 +317,7 @@ export const analyzeIngredientsRisk = async ({ allergies, ingredientsText }) => 
     });
     const matchedAllergens = hasUserAllergies
       ? filterMatchesToProfile(aiResult.matchedAllergens, cleanedAllergies)
-      : aiResult.matchedAllergens;
+      : [];
 
     let reconciledStatus = aiResult.status;
     let summary = aiResult.summary;
@@ -341,6 +331,11 @@ export const analyzeIngredientsRisk = async ({ allergies, ingredientsText }) => 
         );
         reconciledStatus = hasHigh ? "unsafe" : "risk";
       }
+    } else {
+      reconciledStatus = "safe";
+      summary =
+        String(aiResult.summary || "").trim() ||
+        "No allergies on your profile. Ingredients were scanned without personalized allergen matching.";
     }
 
     console.log(
@@ -357,17 +352,20 @@ export const analyzeIngredientsRisk = async ({ allergies, ingredientsText }) => 
     console.warn(
       `[AI] pipeline:fallback source=rules reason="${error.message}" failedAfterMs=${Date.now() - analyzeStart}`,
     );
-    const matches = findKeywordMatches(activeAllergies, ingredientsText);
-    const status = matches.length > 0 ? "unsafe" : "safe";
+    const matches = hasUserAllergies
+      ? findKeywordMatches(activeAllergies, ingredientsText)
+      : [];
+    const status = hasUserAllergies && matches.length > 0 ? "unsafe" : "safe";
     console.log(
       `[AI] pipeline:end source=rules(fallback) status=${status} ruleMatches=${matches.length} totalDurationMs=${Date.now() - analyzeStart}`,
     );
     return {
       status,
-      summary:
-        status === "unsafe"
+      summary: hasUserAllergies
+        ? status === "unsafe"
           ? "Potential allergen ingredients detected. Please review before consuming."
-          : "No major allergen indicators were detected in this ingredient list.",
+          : "No matching allergens found for your profile."
+        : "No allergies on your profile. Scan completed without personalized allergen alerts.",
       matchedAllergens: matches,
       source: "rules",
       fallbackReason: error.message,
