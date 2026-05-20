@@ -153,6 +153,35 @@ export const getAdminUserDetails = async (req, res) => {
   }
 };
 
+export const getAdminScans = async (req, res) => {
+  try {
+    const limitRaw = Number(req.query.limit);
+    const limit =
+      Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 200) : 100;
+
+    const scans = await Scan.find()
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .populate("userId", "name email")
+      .lean();
+
+    return res.status(200).json({
+      data: scans.map((scan) => ({
+        id: scan._id,
+        user: scan.userId?.name || "Unknown",
+        email: scan.userId?.email || "",
+        result: scan.status,
+        summary: scan.summary,
+        date: scan.createdAt,
+      })),
+    });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "Failed to fetch scan activity", error: error.message });
+  }
+};
+
 export const getAdminOverview = async (_req, res) => {
   try {
     const [totalUsers, premiumActive, totalScans, riskAlerts, recentScans, subscriptions, scanCounts] =

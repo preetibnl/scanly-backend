@@ -4,6 +4,7 @@ import {
   forgotPassword,
   getAdminUserDetails,
   getAdminOverview,
+  getAdminScans,
   getCurrentUserMe,
   getUsers,
   getUserProfile,
@@ -36,6 +37,7 @@ router.delete("/:id", authenticateUser, requireSelfUserId("id"), deleteUser);
 
 // Admin only (same paths as before for scanly-web compatibility)
 router.get("/admin/overview", authenticateAdmin, getAdminOverview);
+router.get("/admin/scans", authenticateAdmin, getAdminScans);
 router.get("/:id/admin-details", authenticateAdmin, getAdminUserDetails);
 router.get("/", authenticateAdmin, getUsers);
 
