@@ -268,6 +268,11 @@ export const verifyStripeConnection = async (req, res) => {
 
 const premiumStatuses = new Set(["active", "trialing", "past_due"]);
 
+const isFreeStatus = (status) => {
+  const s = String(status || "").toLowerCase();
+  return !s || s === "canceled" || s === "cancelled" || s === "incomplete_expired" || s === "unpaid";
+};
+
 const syncUserFromSubscription = async (subscription, fallbackUserId) => {
   const userId = fallbackUserId || subscription.metadata?.userId;
   if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
@@ -303,94 +308,66 @@ const syncUserFromSubscription = async (subscription, fallbackUserId) => {
   );
 };
 
-const checkoutLineItems = () => {
-  const priceId = process.env.STRIPE_PRICE_ID?.trim();
+const checkoutLineItems = (billingInterval = "month") => {
+  const interval = billingInterval === "year" ? "year" : "month";
+  const monthlyPriceId = process.env.STRIPE_PRICE_ID_MONTHLY?.trim();
+  const yearlyPriceId = process.env.STRIPE_PRICE_ID_YEARLY?.trim();
+  const legacySinglePriceId = process.env.STRIPE_PRICE_ID?.trim();
+  const priceId =
+    interval === "year"
+      ? yearlyPriceId || null
+      : monthlyPriceId || legacySinglePriceId || null;
+
   if (priceId) {
-    console.log("[Stripe] Using STRIPE_PRICE_ID for Checkout line_items.");
+    console.log(`[Stripe] Using Stripe Price ID for ${interval} checkout.`);
     return [{ price: priceId, quantity: 1 }];
   }
+
+  const unitAmount = interval === "year" ? 4999 : 499;
   console.log(
-    "[Stripe] STRIPE_PRICE_ID not set — using inline price_data ($7.99/mo). Create a Price in Dashboard and set STRIPE_PRICE_ID for production.",
+    `[Stripe] Price ID for ${interval} not set — using inline price_data ($${(unitAmount / 100).toFixed(2)}/${interval}).`,
   );
   return [
     {
       price_data: {
         currency: "usd",
         product_data: {
-          name: "Premium Plan",
-          description: "Monthly subscription — unlimited label scans and premium features",
+          name: interval === "year" ? "Premium Plan (Yearly)" : "Premium Plan (Monthly)",
+          description:
+            "Subscription — unlimited label scans and premium safety features",
         },
-        unit_amount: 799,
-        recurring: { interval: "month" },
+        unit_amount: unitAmount,
+        recurring: { interval },
       },
       quantity: 1,
     },
   ];
 };
 
-const returnPageHtml = ({ title, body, appUrl }) => `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>${title}</title>
-  <style>
-    body { font-family: system-ui, sans-serif; padding: 24px; max-width: 420px; margin: 0 auto; }
-    a.button { display: inline-block; margin-top: 16px; padding: 12px 20px; background: #0d9488; color: #fff; text-decoration: none; border-radius: 8px; font-weight: 600; }
-    p { color: #444; line-height: 1.5; }
-  </style>
-</head>
-<body>
-  <h1>${title}</h1>
-  <p>${body}</p>
-  <a class="button" href="${appUrl}">Open app</a>
-  <p style="font-size:12px;color:#888;">If the button does not open the app, close this tab and return to the app manually.</p>
-  <script>setTimeout(function(){ window.location.href = ${JSON.stringify(appUrl)}; }, 600);</script>
-</body>
-</html>`;
-
 export const renderReturnSuccess = async (req, res) => {
   const sessionId = req.query.session_id ? String(req.query.session_id) : "";
   const base =
-    process.env.MOBILE_STRIPE_SUCCESS_URL?.trim() || "foodalleryscanner://stripe?status=success";
+    process.env.MOBILE_STRIPE_SUCCESS_URL?.trim() ||
+    "foodalleryscanner://stripe?status=success&dest=home";
   const appUrl = sessionId
     ? `${base}${base.includes("?") ? "&" : "?"}session_id=${encodeURIComponent(sessionId)}`
     : base;
-  res.setHeader("Content-Type", "text/html; charset=utf-8");
-  res.send(
-    returnPageHtml({
-      title: "Payment successful",
-      body: "Your subscription is being activated. You can return to the app now.",
-      appUrl,
-    }),
-  );
+  // Immediate redirect into the app — avoids an intermediate "Open app" HTML page in the browser.
+  return res.redirect(302, appUrl);
 };
 
 export const renderReturnCancel = async (req, res) => {
   const base =
-    process.env.MOBILE_STRIPE_CANCEL_URL?.trim() || "foodalleryscanner://stripe?status=cancel";
-  res.setHeader("Content-Type", "text/html; charset=utf-8");
-  res.send(
-    returnPageHtml({
-      title: "Checkout canceled",
-      body: "No charges were made. You can return to the app and try again whenever you like.",
-      appUrl: base,
-    }),
-  );
+    process.env.MOBILE_STRIPE_CANCEL_URL?.trim() ||
+    "foodalleryscanner://stripe?status=cancel&dest=home";
+  return res.redirect(302, base);
 };
 
 export const renderPortalReturn = async (req, res) => {
   const base =
     process.env.MOBILE_STRIPE_PORTAL_RETURN_URL?.trim() ||
-    "foodalleryscanner://stripe?status=portal_done";
-  res.setHeader("Content-Type", "text/html; charset=utf-8");
-  res.send(
-    returnPageHtml({
-      title: "Billing portal",
-      body: "You have left the Stripe billing portal. Return to the app to continue.",
-      appUrl: base,
-    }),
-  );
+    "foodalleryscanner://stripe?status=portal_done&dest=billing";
+  return res.redirect(302, base);
 };
 
 export const createCheckoutSession = async (req, res) => {
@@ -415,6 +392,8 @@ export const createCheckoutSession = async (req, res) => {
   const base = resolvedBase.base;
   console.log(`[Stripe] Checkout return URLs use base (${resolvedBase.source}): ${base}`);
 
+  const requestedInterval = String(req.body?.billingInterval || "month").toLowerCase();
+  const billingInterval = requestedInterval === "year" ? "year" : "month";
   const userId = req.userId;
   const user = await User.findById(userId);
   if (!user) {
@@ -441,12 +420,12 @@ export const createCheckoutSession = async (req, res) => {
     const session = await stripe.checkout.sessions.create({
       customer: customerId,
       mode: "subscription",
-      line_items: checkoutLineItems(),
+      line_items: checkoutLineItems(billingInterval),
       success_url: successUrl,
       cancel_url: cancelUrl,
-      metadata: { userId: String(user._id) },
+      metadata: { userId: String(user._id), billingInterval },
       subscription_data: {
-        metadata: { userId: String(user._id) },
+        metadata: { userId: String(user._id), billingInterval },
       },
       client_reference_id: String(user._id),
     });
@@ -518,10 +497,15 @@ export const getBillingSummary = async (req, res) => {
 
   const stripe = getStripe();
   if (!stripe || !user.stripeCustomerId) {
+    const plan = (user.plan || "free").toLowerCase() === "premium" ? "premium" : "free";
+    const normalizedStatus =
+      plan === "free"
+        ? "active"
+        : user.subscriptionStatus || null;
     return res.status(200).json({
       hasStripeCustomer: Boolean(user.stripeCustomerId),
-      plan: user.plan || "free",
-      subscriptionStatus: user.subscriptionStatus || null,
+      plan,
+      subscriptionStatus: normalizedStatus,
       subscriptionCurrentPeriodEnd: user.subscriptionCurrentPeriodEnd || null,
       paymentMethodLabel: null,
       latestInvoiceLabel: null,
@@ -557,14 +541,24 @@ export const getBillingSummary = async (req, res) => {
       );
     }
 
-    let amountDisplay = "$7.99";
+    let amountDisplay = "$4.99";
     let intervalLabel = "per month";
     let planTitle = "Premium monthly";
+    let effectivePlan = (user.plan || "free").toLowerCase() === "premium" ? "premium" : "free";
+    let effectiveSubscriptionStatus = user.subscriptionStatus || null;
+    let effectiveCurrentPeriodEnd = user.subscriptionCurrentPeriodEnd || null;
+    let effectiveCancelAtPeriodEnd = Boolean(user.subscriptionCancelAtPeriodEnd);
 
     if (user.stripeSubscriptionId) {
       const sub = await stripe.subscriptions.retrieve(user.stripeSubscriptionId, {
         expand: ["items.data.price"],
       });
+      effectiveSubscriptionStatus = sub.status || null;
+      effectiveCurrentPeriodEnd = sub.current_period_end
+        ? new Date(sub.current_period_end * 1000)
+        : null;
+      effectiveCancelAtPeriodEnd = Boolean(sub.cancel_at_period_end);
+      effectivePlan = premiumStatuses.has(sub.status) ? "premium" : "free";
       const item = sub.items?.data?.[0];
       const price = item?.price;
       if (price?.unit_amount != null && price?.currency) {
@@ -579,16 +573,56 @@ export const getBillingSummary = async (req, res) => {
       if (price?.nickname) planTitle = price.nickname;
     }
 
+    let discoveredSubscriptionId = null;
+    if (!user.stripeSubscriptionId) {
+      const subscriptions = await stripe.subscriptions.list({
+        customer: user.stripeCustomerId,
+        status: "all",
+        limit: 1,
+      });
+      const latestSub = subscriptions.data?.[0];
+      if (latestSub) {
+        discoveredSubscriptionId = latestSub.id;
+        effectiveSubscriptionStatus = latestSub.status || null;
+        effectiveCurrentPeriodEnd = latestSub.current_period_end
+          ? new Date(latestSub.current_period_end * 1000)
+          : null;
+        effectiveCancelAtPeriodEnd = Boolean(latestSub.cancel_at_period_end);
+        effectivePlan = premiumStatuses.has(latestSub.status) ? "premium" : "free";
+      }
+    }
+
+    if (effectivePlan === "free" && isFreeStatus(effectiveSubscriptionStatus)) {
+      effectiveSubscriptionStatus = "active";
+    }
+
+    const nextSubscriptionId = user.stripeSubscriptionId || discoveredSubscriptionId || null;
+    const shouldPersist =
+      String(user.plan || "free") !== effectivePlan ||
+      String(user.subscriptionStatus || "") !== String(effectiveSubscriptionStatus || "") ||
+      String(user.stripeSubscriptionId || "") !== String(nextSubscriptionId || "") ||
+      String(user.subscriptionCurrentPeriodEnd || "") !== String(effectiveCurrentPeriodEnd || "") ||
+      Boolean(user.subscriptionCancelAtPeriodEnd) !== effectiveCancelAtPeriodEnd;
+    if (shouldPersist) {
+      await User.findByIdAndUpdate(userId, {
+        plan: effectivePlan,
+        stripeSubscriptionId: nextSubscriptionId,
+        subscriptionStatus: effectiveSubscriptionStatus,
+        subscriptionCurrentPeriodEnd: effectiveCurrentPeriodEnd,
+        subscriptionCancelAtPeriodEnd: effectiveCancelAtPeriodEnd,
+      });
+    }
+
     console.log(
       `[Stripe] getBillingSummary OK for user ${userId} (customer ${user.stripeCustomerId})`,
     );
 
     return res.status(200).json({
       hasStripeCustomer: true,
-      plan: user.plan || "free",
-      subscriptionStatus: user.subscriptionStatus || null,
-      subscriptionCurrentPeriodEnd: user.subscriptionCurrentPeriodEnd || null,
-      subscriptionCancelAtPeriodEnd: user.subscriptionCancelAtPeriodEnd || false,
+      plan: effectivePlan,
+      subscriptionStatus: effectiveSubscriptionStatus,
+      subscriptionCurrentPeriodEnd: effectiveCurrentPeriodEnd,
+      subscriptionCancelAtPeriodEnd: effectiveCancelAtPeriodEnd,
       paymentMethodLabel,
       latestInvoiceLabel,
       amountDisplay,

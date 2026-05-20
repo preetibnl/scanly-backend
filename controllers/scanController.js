@@ -7,6 +7,8 @@ import { extractIngredientItems } from "../utils/ingredients.js";
 import { askIngredientAssistant } from "../utils/assistant.js";
 import { getIo } from "../socket.js";
 
+const premiumStatuses = new Set(["active", "trialing", "past_due"]);
+
 export const extractIngredientsTextFromImage = async (req, res) => {
   const flowStart = Date.now();
   try {
@@ -83,10 +85,30 @@ export const analyzeScan = async (req, res) => {
       `[AI] POST /api/scans/analyze step=received userId=${userId} hasImageUrl=${hasImage} imageUrlChars=${String(imageUrl).length} ingredientsChars=${ingredientsChars}`,
     );
 
-    const user = await User.findById(userId).select("allergies name email");
+    const user = await User.findById(userId).select(
+      "allergies name email plan subscriptionStatus",
+    );
     if (!user) {
       console.warn(`[AI] POST /api/scans/analyze → 404 user not found userId=${userId}`);
       return res.status(404).json({ message: "User not found" });
+    }
+
+    const isPremiumUser =
+      String(user.plan || "").toLowerCase() === "premium" &&
+      premiumStatuses.has(String(user.subscriptionStatus || "").toLowerCase());
+    if (!isPremiumUser) {
+      const previousScanCount = await Scan.countDocuments({ userId });
+      if (previousScanCount >= 1) {
+        return res.status(402).json({
+          message:
+            "Free plan includes one scan only. Subscribe to continue scanning.",
+          code: "FREE_SCAN_LIMIT_REACHED",
+          data: {
+            paywallRequired: true,
+            scansRemaining: 0,
+          },
+        });
+      }
     }
 
     console.log(

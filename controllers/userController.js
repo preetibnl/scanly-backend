@@ -155,7 +155,7 @@ export const getAdminUserDetails = async (req, res) => {
 
 export const getAdminOverview = async (_req, res) => {
   try {
-    const [totalUsers, premiumActive, totalScans, riskAlerts, recentScans, subscriptions] =
+    const [totalUsers, premiumActive, totalScans, riskAlerts, recentScans, subscriptions, scanCounts] =
       await Promise.all([
         User.countDocuments(),
         User.countDocuments({
@@ -175,13 +175,26 @@ export const getAdminOverview = async (_req, res) => {
           $or: [
             { subscriptionStatus: { $in: ["active", "past_due", "past due", "canceled", "cancelled"] } },
             { plan: { $regex: /^premium$/i } },
+            { plan: { $regex: /^free$/i } },
           ],
         })
           .sort({ updatedAt: -1 })
-          .limit(12)
-          .select("name email plan subscriptionStatus subscriptionCurrentPeriodEnd")
+          .limit(50)
+          .select("name email plan subscriptionStatus subscriptionCurrentPeriodEnd stripeSubscriptionId")
           .lean(),
+        Scan.aggregate([
+          {
+            $group: {
+              _id: "$userId",
+              count: { $sum: 1 },
+            },
+          },
+        ]),
       ]);
+
+    const scanCountMap = new Map(
+      scanCounts.map((item) => [String(item._id), Number(item.count || 0)]),
+    );
 
     const subscriptionSummary = {
       active: subscriptions.filter(
@@ -217,9 +230,12 @@ export const getAdminOverview = async (_req, res) => {
         subscriptionItems: subscriptions.map((u) => ({
           id: u._id,
           user: u.name,
+          email: u.email,
           plan: String(u.plan || "Free").replace(/^./, (ch) => ch.toUpperCase()),
           status:
-            String(u.subscriptionStatus || "").toLowerCase() === "active"
+            String(u.plan || "").toLowerCase() === "free"
+              ? "Active"
+              : String(u.subscriptionStatus || "").toLowerCase() === "active"
               ? "Active"
               : String(u.subscriptionStatus || "").toLowerCase() === "past_due" ||
                   String(u.subscriptionStatus || "").toLowerCase() === "past due"
@@ -231,6 +247,11 @@ export const getAdminOverview = async (_req, res) => {
                     ? "Active"
                     : "Inactive",
           renewsOn: u.subscriptionCurrentPeriodEnd || null,
+          billing:
+            String(u.plan || "").toLowerCase() === "premium" && u.stripeSubscriptionId
+              ? "Paid"
+              : "Free",
+          scans: scanCountMap.get(String(u._id)) || 0,
         })),
       },
     });
