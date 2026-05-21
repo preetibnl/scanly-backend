@@ -273,7 +273,40 @@ const isFreeStatus = (status) => {
   return !s || s === "canceled" || s === "cancelled" || s === "incomplete_expired" || s === "unpaid";
 };
 
-const syncUserFromSubscription = async (subscription, fallbackUserId) => {
+/** After checkout or sync: keep renewal on and attach card for the next AutoPay charge. */
+const ensureSubscriptionAutoPayOn = async (stripe, subscription) => {
+  if (!stripe || !subscription?.id) return subscription;
+
+  let sub = subscription;
+  const customerId =
+    typeof sub.customer === "string" ? sub.customer : sub.customer?.id;
+
+  if (premiumStatuses.has(sub.status) && sub.cancel_at_period_end) {
+    sub = await stripe.subscriptions.update(sub.id, {
+      cancel_at_period_end: false,
+    });
+    console.log(`[Stripe] AutoPay: cleared cancel_at_period_end on ${sub.id}`);
+  }
+
+  const paymentMethodId =
+    typeof sub.default_payment_method === "string"
+      ? sub.default_payment_method
+      : sub.default_payment_method?.id;
+
+  if (customerId && paymentMethodId) {
+    await stripe.customers.update(customerId, {
+      invoice_settings: { default_payment_method: paymentMethodId },
+    });
+  }
+
+  return sub;
+};
+
+const syncUserFromSubscription = async (
+  subscription,
+  fallbackUserId,
+  options = {},
+) => {
   const userId = fallbackUserId || subscription.metadata?.userId;
   if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
     console.warn("[Stripe] syncUserFromSubscription: missing or invalid userId", {
@@ -282,29 +315,37 @@ const syncUserFromSubscription = async (subscription, fallbackUserId) => {
     return;
   }
 
-  const customerId =
-    typeof subscription.customer === "string"
-      ? subscription.customer
-      : subscription.customer?.id;
+  const stripe = getStripe();
+  let sub = subscription;
+  if (
+    stripe &&
+    options.enableAutoPayAfterPurchase &&
+    premiumStatuses.has(subscription.status)
+  ) {
+    sub = await ensureSubscriptionAutoPayOn(stripe, subscription);
+  }
 
-  const isPremium = premiumStatuses.has(subscription.status);
-  const periodEnd = subscription.current_period_end
-    ? new Date(subscription.current_period_end * 1000)
+  const customerId =
+    typeof sub.customer === "string" ? sub.customer : sub.customer?.id;
+
+  const isPremium = premiumStatuses.has(sub.status);
+  const periodEnd = sub.current_period_end
+    ? new Date(sub.current_period_end * 1000)
     : null;
 
   await User.findByIdAndUpdate(userId, {
     stripeCustomerId: customerId,
-    stripeSubscriptionId: subscription.id,
-    subscriptionStatus: subscription.status,
+    stripeSubscriptionId: sub.id,
+    subscriptionStatus: sub.status,
     subscriptionCurrentPeriodEnd: periodEnd,
-    subscriptionCancelAtPeriodEnd: Boolean(subscription.cancel_at_period_end),
+    subscriptionCancelAtPeriodEnd: Boolean(sub.cancel_at_period_end),
     plan: isPremium ? "premium" : "free",
   });
 
   console.log(
-    `[Stripe] User ${userId} synced from subscription ${subscription.id}: plan=${
+    `[Stripe] User ${userId} synced from subscription ${sub.id}: plan=${
       isPremium ? "premium" : "free"
-    } status=${subscription.status}`,
+    } status=${sub.status} autoPay=${isPremium && !sub.cancel_at_period_end}`,
   );
 };
 
@@ -344,6 +385,124 @@ const checkoutLineItems = (billingInterval = "month") => {
   ];
 };
 
+const isStripeProductActive = async (stripe, productRef) => {
+  if (!productRef) return false;
+  try {
+    const product =
+      typeof productRef === "string"
+        ? await stripe.products.retrieve(productRef)
+        : productRef;
+    return Boolean(product?.active);
+  } catch {
+    return false;
+  }
+};
+
+const isStripePriceUsable = async (stripe, priceId) => {
+  if (!priceId) return false;
+  try {
+    const price = await stripe.prices.retrieve(priceId, { expand: ["product"] });
+    if (!price.active) return false;
+    return isStripeProductActive(stripe, price.product);
+  } catch {
+    return false;
+  }
+};
+
+const createRecurringPriceOnProduct = async (stripe, billingInterval, productId) => {
+  const unitAmount = billingInterval === "year" ? 4999 : 499;
+  const interval = billingInterval === "year" ? "year" : "month";
+  const created = await stripe.prices.create({
+    currency: "usd",
+    unit_amount: unitAmount,
+    recurring: { interval },
+    product: productId,
+    nickname:
+      billingInterval === "year" ? "Premium Plan (Yearly)" : "Premium Plan (Monthly)",
+  });
+  return created.id;
+};
+
+const getOrCreateActivePremiumProduct = async (stripe) => {
+  const listed = await stripe.products.list({ active: true, limit: 20 });
+  const existing = listed.data.find((p) =>
+    /scanly|premium/i.test(String(p.name || "")),
+  );
+  if (existing?.id) {
+    return existing.id;
+  }
+
+  const created = await stripe.products.create({
+    name: "Scanly Premium",
+    description: "Premium subscription — unlimited scans and safety features",
+    active: true,
+  });
+  console.log(`[Stripe] Created active product ${created.id} for plan switching`);
+  return created.id;
+};
+
+/**
+ * Pick a price for plan changes. Ignores inactive .env price IDs and falls back
+ * to the subscriber's active product or a new active Premium product in Stripe.
+ */
+const resolveSwitchPriceId = async (stripe, billingInterval, currentPrice) => {
+  const lineItems = checkoutLineItems(billingInterval);
+  const spec = lineItems[0];
+
+  if (spec.price && (await isStripePriceUsable(stripe, spec.price))) {
+    return spec.price;
+  }
+  if (spec.price) {
+    console.warn(
+      `[Stripe] Configured price ${spec.price} is inactive or archived — using fallback for ${billingInterval}`,
+    );
+  }
+
+  const currentProductId =
+    typeof currentPrice?.product === "string"
+      ? currentPrice.product
+      : currentPrice?.product?.id;
+
+  if (await isStripeProductActive(stripe, currentPrice?.product ?? currentProductId)) {
+    return createRecurringPriceOnProduct(stripe, billingInterval, currentProductId);
+  }
+
+  const activeProductId = await getOrCreateActivePremiumProduct(stripe);
+  return createRecurringPriceOnProduct(stripe, billingInterval, activeProductId);
+};
+
+const friendlyStripePlanError = (err) => {
+  const raw =
+    typeof err?.raw?.message === "string"
+      ? err.raw.message
+      : typeof err?.message === "string"
+        ? err.message
+        : "Could not switch plan";
+
+  if (/marked as inactive/i.test(raw)) {
+    return (
+      "This plan is inactive in Stripe. In Stripe Dashboard → Products, activate the Premium product " +
+      "or update STRIPE_PRICE_ID_MONTHLY and STRIPE_PRICE_ID_YEARLY in the backend .env to active price IDs, then restart the server."
+    );
+  }
+  return raw;
+};
+
+const planDisplayFromPrice = (price) => {
+  const interval = price?.recurring?.interval === "year" ? "year" : "month";
+  const amountDisplay =
+    price?.unit_amount != null && price?.currency
+      ? `$${(price.unit_amount / 100).toFixed(2)}`
+      : interval === "year"
+        ? "$49.99"
+        : "$4.99";
+  const intervalLabel = interval === "year" ? "per year" : "per month";
+  const planTitle =
+    price?.nickname ||
+    (interval === "year" ? "Premium yearly" : "Premium monthly");
+  return { amountDisplay, intervalLabel, planTitle, billingInterval: interval };
+};
+
 /** Sync MongoDB user plan from a completed Checkout Session (works without webhooks). */
 export const syncCheckoutSessionById = async (sessionId) => {
   const stripe = getStripe();
@@ -376,7 +535,9 @@ export const syncCheckoutSessionById = async (sessionId) => {
     subscription = await stripe.subscriptions.retrieve(subscription);
   }
 
-  await syncUserFromSubscription(subscription, userId);
+  await syncUserFromSubscription(subscription, userId, {
+    enableAutoPayAfterPurchase: true,
+  });
   console.log(`[Stripe] syncCheckoutSessionById: done userId=${userId} sub=${subscription.id}`);
   return { synced: true, userId: String(userId || "") };
 };
@@ -497,7 +658,10 @@ export const createCheckoutSession = async (req, res) => {
       metadata: { userId: String(user._id), billingInterval },
       subscription_data: {
         metadata: { userId: String(user._id), billingInterval },
+        // Recurring AutoPay from first successful checkout (monthly or yearly).
+        collection_method: "charge_automatically",
       },
+      payment_method_collection: "always",
       client_reference_id: String(user._id),
     });
 
@@ -508,6 +672,136 @@ export const createCheckoutSession = async (req, res) => {
   } catch (err) {
     console.error("[Stripe] createCheckoutSession error:", err?.message || err);
     return res.status(500).json({ message: "Could not start checkout", error: err.message });
+  }
+};
+
+/** Turn automatic renewal on/off (Stripe cancel_at_period_end). */
+export const updateAutoPay = async (req, res) => {
+  const stripe = getStripe();
+  if (!stripe) {
+    return res.status(503).json({ message: "Stripe is not configured on the server" });
+  }
+
+  const enabled = req.body?.enabled === true || req.body?.enabled === "true";
+  const userId = req.userId;
+  const user = await User.findById(userId);
+  if (!user) {
+    return res.status(404).json({ message: "User not found" });
+  }
+  if (!user.stripeSubscriptionId) {
+    return res.status(400).json({
+      message: "No active subscription. Subscribe from Premium first.",
+    });
+  }
+
+  try {
+    const sub = await stripe.subscriptions.retrieve(user.stripeSubscriptionId);
+    if (!premiumStatuses.has(sub.status)) {
+      return res.status(400).json({
+        message: "Subscription is not active. Subscribe again from Premium to use AutoPay.",
+      });
+    }
+
+    if (enabled) {
+      const customer = await stripe.customers.retrieve(user.stripeCustomerId, {
+        expand: ["invoice_settings.default_payment_method"],
+      });
+      const pm = customer.invoice_settings?.default_payment_method;
+      if (!pm) {
+        return res.status(400).json({
+          message:
+            "Add a payment method first (Billing → Payment method), then turn AutoPay on.",
+        });
+      }
+    }
+
+    const updated = await stripe.subscriptions.update(user.stripeSubscriptionId, {
+      cancel_at_period_end: !enabled,
+    });
+    await syncUserFromSubscription(updated, userId);
+    console.log(`[Stripe] updateAutoPay: user ${userId} enabled=${enabled}`);
+
+    req.params = { userId };
+    return getBillingSummary(req, res);
+  } catch (err) {
+    console.error("[Stripe] updateAutoPay error:", err?.message || err);
+    return res.status(500).json({
+      message: err?.message || "Could not update AutoPay",
+      error: err.message,
+    });
+  }
+};
+
+export const switchSubscriptionPlan = async (req, res) => {
+  const stripe = getStripe();
+  if (!stripe) {
+    return res.status(503).json({ message: "Stripe is not configured on the server" });
+  }
+
+  const requestedInterval = String(req.body?.billingInterval || "").toLowerCase();
+  const billingInterval = requestedInterval === "year" ? "year" : "month";
+  const userId = req.userId;
+  const user = await User.findById(userId);
+  if (!user) {
+    return res.status(404).json({ message: "User not found" });
+  }
+  if (!user.stripeSubscriptionId) {
+    return res.status(400).json({
+      message: "No active subscription. Subscribe from Premium first.",
+    });
+  }
+
+  try {
+    const sub = await stripe.subscriptions.retrieve(user.stripeSubscriptionId, {
+      expand: ["items.data.price"],
+    });
+    if (!premiumStatuses.has(sub.status)) {
+      return res.status(400).json({
+        message: "Subscription is not active. Renew or subscribe again from Premium.",
+      });
+    }
+
+    const item = sub.items?.data?.[0];
+    if (!item?.id) {
+      return res.status(400).json({ message: "Subscription has no billable items" });
+    }
+
+    const currentInterval =
+      item.price?.recurring?.interval === "year" ? "year" : "month";
+    if (currentInterval === billingInterval) {
+      return res.status(400).json({
+        message:
+          billingInterval === "year"
+            ? "You are already on the yearly plan."
+            : "You are already on the monthly plan.",
+      });
+    }
+
+    const newPriceId = await resolveSwitchPriceId(stripe, billingInterval, item.price);
+    const updated = await stripe.subscriptions.update(user.stripeSubscriptionId, {
+      items: [{ id: item.id, price: newPriceId }],
+      proration_behavior: "create_prorations",
+      cancel_at_period_end: false,
+      metadata: {
+        ...(sub.metadata || {}),
+        userId: String(user._id),
+        billingInterval,
+      },
+    });
+
+    await syncUserFromSubscription(updated, userId);
+    console.log(
+      `[Stripe] switchSubscriptionPlan: user ${userId} ${currentInterval} → ${billingInterval}`,
+    );
+
+    req.params = { userId };
+    return getBillingSummary(req, res);
+  } catch (err) {
+    console.error("[Stripe] switchSubscriptionPlan error:", err?.message || err);
+    return res.status(500).json({
+      message: friendlyStripePlanError(err),
+      error: err.message,
+    });
   }
 };
 
@@ -591,14 +885,16 @@ export const getBillingSummary = async (req, res) => {
     });
 
     let paymentMethodLabel = null;
+    const formatPmLabel = (pmObj) => {
+      if (!pmObj || typeof pmObj === "string") return null;
+      const card = pmObj.card;
+      if (!card) return null;
+      const brand = (card.brand || "Card").replace(/^./, (c) => c.toUpperCase());
+      return `${brand} ending in ${card.last4}`;
+    };
+
     const pm = customer.invoice_settings?.default_payment_method;
-    if (pm && typeof pm !== "string") {
-      const card = pm.card;
-      if (card) {
-        const brand = (card.brand || "Card").replace(/^./, (c) => c.toUpperCase());
-        paymentMethodLabel = `${brand} ending in ${card.last4}`;
-      }
-    }
+    paymentMethodLabel = formatPmLabel(pm);
 
     let latestInvoiceLabel = null;
     const invoices = await stripe.invoices.list({
@@ -615,37 +911,49 @@ export const getBillingSummary = async (req, res) => {
     let amountDisplay = "$4.99";
     let intervalLabel = "per month";
     let planTitle = "Premium monthly";
+    let billingInterval = "month";
+    let autoPayEnabled = false;
     let effectivePlan = (user.plan || "free").toLowerCase() === "premium" ? "premium" : "free";
     let effectiveSubscriptionStatus = user.subscriptionStatus || null;
     let effectiveCurrentPeriodEnd = user.subscriptionCurrentPeriodEnd || null;
     let effectiveCancelAtPeriodEnd = Boolean(user.subscriptionCancelAtPeriodEnd);
 
-    if (user.stripeSubscriptionId) {
-      const sub = await stripe.subscriptions.retrieve(user.stripeSubscriptionId, {
-        expand: ["items.data.price"],
-      });
+    const applySubscriptionToSummary = (sub) => {
       effectiveSubscriptionStatus = sub.status || null;
       effectiveCurrentPeriodEnd = sub.current_period_end
         ? new Date(sub.current_period_end * 1000)
         : null;
       effectiveCancelAtPeriodEnd = Boolean(sub.cancel_at_period_end);
       effectivePlan = premiumStatuses.has(sub.status) ? "premium" : "free";
-      const item = sub.items?.data?.[0];
-      const price = item?.price;
-      if (price?.unit_amount != null && price?.currency) {
-        amountDisplay = `$${(price.unit_amount / 100).toFixed(2)}`;
-        intervalLabel =
-          price.recurring?.interval === "year"
-            ? "per year"
-            : price.recurring?.interval === "month"
-              ? "per month"
-              : "";
+      const price = sub.items?.data?.[0]?.price;
+      const display = planDisplayFromPrice(price);
+      amountDisplay = display.amountDisplay;
+      intervalLabel = display.intervalLabel;
+      planTitle = display.planTitle;
+      billingInterval = display.billingInterval;
+
+      const subPm = sub.default_payment_method;
+      if (!paymentMethodLabel) {
+        paymentMethodLabel = formatPmLabel(
+          typeof subPm === "string" ? null : subPm,
+        );
       }
-      if (price?.nickname) planTitle = price.nickname;
-    }
+
+      const chargesAutomatically =
+        (sub.collection_method || "charge_automatically") === "charge_automatically";
+      autoPayEnabled =
+        premiumStatuses.has(sub.status) &&
+        chargesAutomatically &&
+        !effectiveCancelAtPeriodEnd;
+    };
 
     let discoveredSubscriptionId = null;
-    if (!user.stripeSubscriptionId) {
+    if (user.stripeSubscriptionId) {
+      const sub = await stripe.subscriptions.retrieve(user.stripeSubscriptionId, {
+        expand: ["items.data.price", "default_payment_method"],
+      });
+      applySubscriptionToSummary(sub);
+    } else {
       const subscriptions = await stripe.subscriptions.list({
         customer: user.stripeCustomerId,
         status: "all",
@@ -654,12 +962,10 @@ export const getBillingSummary = async (req, res) => {
       const latestSub = subscriptions.data?.[0];
       if (latestSub) {
         discoveredSubscriptionId = latestSub.id;
-        effectiveSubscriptionStatus = latestSub.status || null;
-        effectiveCurrentPeriodEnd = latestSub.current_period_end
-          ? new Date(latestSub.current_period_end * 1000)
-          : null;
-        effectiveCancelAtPeriodEnd = Boolean(latestSub.cancel_at_period_end);
-        effectivePlan = premiumStatuses.has(latestSub.status) ? "premium" : "free";
+        const sub = await stripe.subscriptions.retrieve(latestSub.id, {
+          expand: ["items.data.price", "default_payment_method"],
+        });
+        applySubscriptionToSummary(sub);
       }
     }
 
@@ -699,6 +1005,8 @@ export const getBillingSummary = async (req, res) => {
       amountDisplay,
       intervalLabel,
       planTitle,
+      billingInterval,
+      autoPayEnabled,
     });
   } catch (err) {
     console.error("[Stripe] getBillingSummary error:", err?.message || err);

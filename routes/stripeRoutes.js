@@ -4,6 +4,8 @@ import {
   createCheckoutSession,
   createPortalSession,
   getBillingSummary,
+  switchSubscriptionPlan,
+  updateAutoPay,
   renderPortalReturn,
   renderReturnCancel,
   renderReturnSuccess,
@@ -22,6 +24,8 @@ router.get("/return/portal", renderPortalReturn);
 router.post("/create-checkout-session", authenticateUser, createCheckoutSession);
 router.post("/confirm-checkout", authenticateUser, confirmCheckoutSession);
 router.post("/create-portal-session", authenticateUser, createPortalSession);
+router.post("/switch-plan", authenticateUser, switchSubscriptionPlan);
+router.post("/autopay", authenticateUser, updateAutoPay);
 router.get(
   "/billing-summary/:userId",
   authenticateUser,
