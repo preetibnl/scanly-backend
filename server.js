@@ -12,6 +12,7 @@ import s3Routes from "./routes/s3Routes.js";
 import scanRoutes from "./routes/scanRoutes.js";
 import stripeRoutes from "./routes/stripeRoutes.js";
 import stripeWebhookRoutes from "./routes/stripeWebhookRoutes.js";
+import planRoutes from "./routes/planRoutes.js";
 import { initSocket } from "./socket.js";
 
 dotenv.config();
@@ -47,6 +48,7 @@ app.use("/api/users", userRoutes);
 app.use("/api/s3", s3Routes);
 app.use("/api/scans", scanRoutes);
 app.use("/api/stripe", stripeRoutes);
+app.use("/api/plans", planRoutes);
 
 const startServer = async () => {
   try {

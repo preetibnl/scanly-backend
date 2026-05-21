@@ -1,6 +1,7 @@
 import Stripe from "stripe";
 import mongoose from "mongoose";
 import User from "../models/userModel.js";
+import { getSubscriptionPlanSettings } from "./subscriptionPlanConfigController.js";
 
 let stripeSingleton = null;
 
@@ -349,10 +350,17 @@ const syncUserFromSubscription = async (
   );
 };
 
-const checkoutLineItems = (billingInterval = "month") => {
+const checkoutLineItems = async (billingInterval = "month") => {
   const interval = billingInterval === "year" ? "year" : "month";
-  const monthlyPriceId = process.env.STRIPE_PRICE_ID_MONTHLY?.trim();
-  const yearlyPriceId = process.env.STRIPE_PRICE_ID_YEARLY?.trim();
+  const settings = await getSubscriptionPlanSettings();
+  const monthlyPriceId =
+    settings.stripePriceIdMonthly?.trim() ||
+    process.env.STRIPE_PRICE_ID_MONTHLY?.trim() ||
+    "";
+  const yearlyPriceId =
+    settings.stripePriceIdYearly?.trim() ||
+    process.env.STRIPE_PRICE_ID_YEARLY?.trim() ||
+    "";
   const legacySinglePriceId = process.env.STRIPE_PRICE_ID?.trim();
   const priceId =
     interval === "year"
@@ -364,14 +372,16 @@ const checkoutLineItems = (billingInterval = "month") => {
     return [{ price: priceId, quantity: 1 }];
   }
 
-  const unitAmount = interval === "year" ? 4999 : 499;
+  const unitAmount =
+    interval === "year" ? settings.yearlyPriceCents : settings.monthlyPriceCents;
+  const currency = settings.currency || "usd";
   console.log(
-    `[Stripe] Price ID for ${interval} not set — using inline price_data ($${(unitAmount / 100).toFixed(2)}/${interval}).`,
+    `[Stripe] Using admin plan price for ${interval}: $${(unitAmount / 100).toFixed(2)}/${interval}.`,
   );
   return [
     {
       price_data: {
-        currency: "usd",
+        currency,
         product_data: {
           name: interval === "year" ? "Premium Plan (Yearly)" : "Premium Plan (Monthly)",
           description:
@@ -410,10 +420,12 @@ const isStripePriceUsable = async (stripe, priceId) => {
 };
 
 const createRecurringPriceOnProduct = async (stripe, billingInterval, productId) => {
-  const unitAmount = billingInterval === "year" ? 4999 : 499;
+  const settings = await getSubscriptionPlanSettings();
+  const unitAmount =
+    billingInterval === "year" ? settings.yearlyPriceCents : settings.monthlyPriceCents;
   const interval = billingInterval === "year" ? "year" : "month";
   const created = await stripe.prices.create({
-    currency: "usd",
+    currency: settings.currency || "usd",
     unit_amount: unitAmount,
     recurring: { interval },
     product: productId,
@@ -446,7 +458,7 @@ const getOrCreateActivePremiumProduct = async (stripe) => {
  * to the subscriber's active product or a new active Premium product in Stripe.
  */
 const resolveSwitchPriceId = async (stripe, billingInterval, currentPrice) => {
-  const lineItems = checkoutLineItems(billingInterval);
+  const lineItems = await checkoutLineItems(billingInterval);
   const spec = lineItems[0];
 
   if (spec.price && (await isStripePriceUsable(stripe, spec.price))) {
@@ -652,7 +664,7 @@ export const createCheckoutSession = async (req, res) => {
     const session = await stripe.checkout.sessions.create({
       customer: customerId,
       mode: "subscription",
-      line_items: checkoutLineItems(billingInterval),
+      line_items: await checkoutLineItems(billingInterval),
       success_url: successUrl,
       cancel_url: cancelUrl,
       metadata: { userId: String(user._id), billingInterval },
