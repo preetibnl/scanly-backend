@@ -1,5 +1,6 @@
 import express from "express";
 import {
+  confirmCheckoutSession,
   createCheckoutSession,
   createPortalSession,
   getBillingSummary,
@@ -19,6 +20,7 @@ router.get("/return/cancel", renderReturnCancel);
 router.get("/return/portal", renderPortalReturn);
 
 router.post("/create-checkout-session", authenticateUser, createCheckoutSession);
+router.post("/confirm-checkout", authenticateUser, confirmCheckoutSession);
 router.post("/create-portal-session", authenticateUser, createPortalSession);
 router.get(
   "/billing-summary/:userId",

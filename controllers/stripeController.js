@@ -344,15 +344,86 @@ const checkoutLineItems = (billingInterval = "month") => {
   ];
 };
 
+/** Sync MongoDB user plan from a completed Checkout Session (works without webhooks). */
+export const syncCheckoutSessionById = async (sessionId) => {
+  const stripe = getStripe();
+  const id = String(sessionId || "").trim();
+  if (!stripe || !id) {
+    console.warn("[Stripe] syncCheckoutSessionById: missing stripe or sessionId");
+    return { synced: false, userId: null };
+  }
+
+  console.log(`[Stripe] syncCheckoutSessionById: start sessionId=${id}`);
+  const session = await stripe.checkout.sessions.retrieve(id, {
+    expand: ["subscription"],
+  });
+
+  const userId = session.metadata?.userId || session.client_reference_id || null;
+  console.log(
+    `[Stripe] syncCheckoutSessionById: mode=${session.mode} payment_status=${session.payment_status} userId=${userId}`,
+  );
+
+  if (session.mode !== "subscription") {
+    return { synced: false, userId };
+  }
+
+  let subscription = session.subscription;
+  if (!subscription) {
+    console.warn("[Stripe] syncCheckoutSessionById: no subscription on session yet");
+    return { synced: false, userId };
+  }
+  if (typeof subscription === "string") {
+    subscription = await stripe.subscriptions.retrieve(subscription);
+  }
+
+  await syncUserFromSubscription(subscription, userId);
+  console.log(`[Stripe] syncCheckoutSessionById: done userId=${userId} sub=${subscription.id}`);
+  return { synced: true, userId: String(userId || "") };
+};
+
+export const confirmCheckoutSession = async (req, res) => {
+  try {
+    const sessionId = String(req.body?.sessionId || "").trim();
+    if (!sessionId) {
+      return res.status(400).json({ message: "sessionId is required" });
+    }
+
+    console.log(`[Stripe] confirmCheckoutSession: user=${req.userId} sessionId=${sessionId}`);
+    const { synced, userId } = await syncCheckoutSessionById(sessionId);
+
+    if (req.userId && userId && String(req.userId) !== String(userId)) {
+      return res.status(403).json({ message: "Checkout session does not belong to this user" });
+    }
+
+    req.params = { userId: req.userId };
+    return getBillingSummary(req, res);
+  } catch (err) {
+    console.error("[Stripe] confirmCheckoutSession error:", err?.message || err);
+    return res.status(500).json({
+      message: "Could not confirm checkout",
+      error: err.message,
+    });
+  }
+};
+
 export const renderReturnSuccess = async (req, res) => {
   const sessionId = req.query.session_id ? String(req.query.session_id) : "";
+
+  if (sessionId) {
+    try {
+      await syncCheckoutSessionById(sessionId);
+    } catch (err) {
+      console.error("[Stripe] renderReturnSuccess sync failed:", err?.message || err);
+    }
+  }
+
   const base =
     process.env.MOBILE_STRIPE_SUCCESS_URL?.trim() ||
     "foodalleryscanner://stripe?status=success&dest=home";
   const appUrl = sessionId
     ? `${base}${base.includes("?") ? "&" : "?"}session_id=${encodeURIComponent(sessionId)}`
     : base;
-  // Immediate redirect into the app — avoids an intermediate "Open app" HTML page in the browser.
+  console.log(`[Stripe] renderReturnSuccess: redirect → ${appUrl}`);
   return res.redirect(302, appUrl);
 };
 
