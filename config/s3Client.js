@@ -25,5 +25,11 @@ export const getS3Config = () => {
 
 export const getS3Client = () => {
   const { region, credentials } = getS3Config();
-  return new S3Client({ region, credentials });
+  return new S3Client({
+    region,
+    credentials,
+    // Avoid CRC32 checksum params on presigned URLs (breaks browser PUT uploads).
+    requestChecksumCalculation: "WHEN_REQUIRED",
+    responseChecksumValidation: "WHEN_REQUIRED",
+  });
 };

@@ -13,6 +13,16 @@ const adminSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    displayName: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    profilePhotoUrl: {
+      type: String,
+      trim: true,
+      default: "",
+    },
   },
   { timestamps: true }
 );
