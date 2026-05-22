@@ -6,6 +6,44 @@ import bcrypt from "bcryptjs";
 import { sendResetOtpEmail } from "../utils/mail.js";
 import { getIo } from "../socket.js";
 import { signUserToken } from "../utils/jwt.js";
+import { createImageUpload, handleImageUpload } from "../middleware/imageUpload.js";
+import {
+  deleteS3ObjectByUrl,
+  resolveProfilePhotoDisplayUrl,
+  uploadImageBuffer,
+} from "../utils/s3Helpers.js";
+
+export const userProfilePhotoUpload = createImageUpload("photo");
+export const handleUserProfilePhotoUpload = handleImageUpload(userProfilePhotoUpload);
+
+export const formatUserProfileResponse = async (user) => {
+  const doc = user?.toObject ? user.toObject() : user;
+  const storedPhoto = String(doc?.profilePhotoUrl || "").trim();
+  return {
+    _id: doc._id,
+    id: doc._id,
+    name: doc.name,
+    email: doc.email,
+    allergies: doc.allergies ?? [],
+    plan: doc.plan || "free",
+    profilePhotoUrl: storedPhoto ? await resolveProfilePhotoDisplayUrl(storedPhoto) : "",
+    createdAt: doc.createdAt,
+    updatedAt: doc.updatedAt,
+  };
+};
+
+export const mapUserToAdminListItem = async (user, scanCount = 0) => {
+  const storedPhoto = String(user?.profilePhotoUrl || "").trim();
+  return {
+    id: user._id,
+    name: user.name,
+    email: user.email,
+    plan: user.plan || "free",
+    createdAt: user.createdAt,
+    scanCount,
+    profilePhotoUrl: storedPhoto ? await resolveProfilePhotoDisplayUrl(storedPhoto) : "",
+  };
+};
 
 const PASSWORD_SALT_ROUNDS = Number(process.env.PASSWORD_SALT_ROUNDS || 10);
 
@@ -53,7 +91,7 @@ export const getUsers = async (_req, res) => {
   try {
     const users = await User.find()
       .sort({ createdAt: -1 })
-      .select("name email plan createdAt")
+      .select("name email plan createdAt profilePhotoUrl")
       .lean();
     const scanCounts = await Scan.aggregate([
       {
@@ -68,14 +106,11 @@ export const getUsers = async (_req, res) => {
     );
 
     return res.status(200).json({
-      data: users.map((user) => ({
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        plan: user.plan || "free",
-        createdAt: user.createdAt,
-        scanCount: scanCountMap.get(String(user._id)) || 0,
-      })),
+      data: await Promise.all(
+        users.map((user) =>
+          mapUserToAdminListItem(user, scanCountMap.get(String(user._id)) || 0),
+        ),
+      ),
     });
   } catch (error) {
     return res
@@ -92,15 +127,15 @@ export const getAdminUserDetails = async (req, res) => {
       return res.status(400).json({ message: "Invalid user id" });
     }
 
-    const user = await User.findById(id)
-      .select(
-        "name email plan allergies stripeCustomerId stripeSubscriptionId subscriptionStatus subscriptionCurrentPeriodEnd subscriptionCancelAtPeriodEnd createdAt updatedAt"
-      )
-      .lean();
+    const user = await User.findById(id).select(
+      "name email plan allergies profilePhotoUrl stripeCustomerId stripeSubscriptionId subscriptionStatus subscriptionCurrentPeriodEnd subscriptionCancelAtPeriodEnd createdAt updatedAt",
+    );
 
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
+
+    const userForClient = await formatUserProfileResponse(user);
 
     const [scanStats, recentScans] = await Promise.all([
       Scan.aggregate([
@@ -134,8 +169,8 @@ export const getAdminUserDetails = async (req, res) => {
     return res.status(200).json({
       data: {
         user: {
-          ...user,
-          plan: user.plan || "free",
+          ...userForClient,
+          plan: userForClient.plan || "free",
         },
         scans: {
           total: statsMap.safe + statsMap.risk + statsMap.unsafe,
@@ -209,7 +244,9 @@ export const getAdminOverview = async (_req, res) => {
         })
           .sort({ updatedAt: -1 })
           .limit(50)
-          .select("name email plan subscriptionStatus subscriptionCurrentPeriodEnd stripeSubscriptionId")
+          .select(
+            "name email plan profilePhotoUrl subscriptionStatus subscriptionCurrentPeriodEnd stripeSubscriptionId",
+          )
           .lean(),
         Scan.aggregate([
           {
@@ -256,32 +293,40 @@ export const getAdminOverview = async (_req, res) => {
           summary: scan.summary,
           date: scan.createdAt,
         })),
-        subscriptionItems: subscriptions.map((u) => ({
-          id: u._id,
-          user: u.name,
-          email: u.email,
-          plan: String(u.plan || "Free").replace(/^./, (ch) => ch.toUpperCase()),
-          status:
-            String(u.plan || "").toLowerCase() === "free"
-              ? "Active"
-              : String(u.subscriptionStatus || "").toLowerCase() === "active"
-              ? "Active"
-              : String(u.subscriptionStatus || "").toLowerCase() === "past_due" ||
-                  String(u.subscriptionStatus || "").toLowerCase() === "past due"
-                ? "Past Due"
-                : String(u.subscriptionStatus || "").toLowerCase() === "canceled" ||
-                    String(u.subscriptionStatus || "").toLowerCase() === "cancelled"
-                  ? "Canceled"
-                  : String(u.plan || "").toLowerCase() === "premium"
+        subscriptionItems: await Promise.all(
+          subscriptions.map(async (u) => {
+            const storedPhoto = String(u.profilePhotoUrl || "").trim();
+            return {
+              id: u._id,
+              user: u.name,
+              email: u.email,
+              profilePhotoUrl: storedPhoto
+                ? await resolveProfilePhotoDisplayUrl(storedPhoto)
+                : "",
+              plan: String(u.plan || "Free").replace(/^./, (ch) => ch.toUpperCase()),
+              status:
+                String(u.plan || "").toLowerCase() === "free"
+                  ? "Active"
+                  : String(u.subscriptionStatus || "").toLowerCase() === "active"
                     ? "Active"
-                    : "Inactive",
-          renewsOn: u.subscriptionCurrentPeriodEnd || null,
-          billing:
-            String(u.plan || "").toLowerCase() === "premium" && u.stripeSubscriptionId
-              ? "Paid"
-              : "Free",
-          scans: scanCountMap.get(String(u._id)) || 0,
-        })),
+                    : String(u.subscriptionStatus || "").toLowerCase() === "past_due" ||
+                        String(u.subscriptionStatus || "").toLowerCase() === "past due"
+                      ? "Past Due"
+                      : String(u.subscriptionStatus || "").toLowerCase() === "canceled" ||
+                          String(u.subscriptionStatus || "").toLowerCase() === "cancelled"
+                        ? "Canceled"
+                        : String(u.plan || "").toLowerCase() === "premium"
+                          ? "Active"
+                          : "Inactive",
+              renewsOn: u.subscriptionCurrentPeriodEnd || null,
+              billing:
+                String(u.plan || "").toLowerCase() === "premium" && u.stripeSubscriptionId
+                  ? "Paid"
+                  : "Free",
+              scans: scanCountMap.get(String(u._id)) || 0,
+            };
+          }),
+        ),
       },
     });
   } catch (error) {
@@ -339,19 +384,15 @@ export const loginUser = async (req, res) => {
 
 export const getCurrentUserMe = async (req, res) => {
   try {
-    const user = await User.findById(req.userId).select("name email allergies plan");
+    const user = await User.findById(req.userId).select(
+      "name email allergies plan profilePhotoUrl",
+    );
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
 
     return res.status(200).json({
-      data: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        allergies: user.allergies ?? [],
-        plan: user.plan || "free",
-      },
+      data: await formatUserProfileResponse(user),
     });
   } catch (error) {
     return res
@@ -558,11 +599,132 @@ export const getUserProfile = async (req, res) => {
     }
 
     return res.status(200).json({
-      data: user,
+      data: await formatUserProfileResponse(user),
     });
   } catch (error) {
     return res
       .status(500)
       .json({ message: "Failed to fetch profile", error: error.message });
+  }
+};
+
+export const uploadUserProfilePhoto = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid user id" });
+    }
+
+    if (String(req.userId) !== String(id)) {
+      return res.status(403).json({ message: "You can only update your own profile photo" });
+    }
+
+    if (!req.file?.buffer?.length) {
+      return res.status(400).json({ message: "Photo file is required" });
+    }
+
+    const user = await User.findById(id);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const previousPhotoUrl = user.profilePhotoUrl;
+    const { fileUrl } = await uploadImageBuffer({
+      folder: `user-profiles/${id}`,
+      fileName: req.file.originalname || "avatar.jpg",
+      contentType: req.file.mimetype,
+      buffer: req.file.buffer,
+    });
+
+    user.profilePhotoUrl = fileUrl;
+    await user.save();
+
+    if (previousPhotoUrl && previousPhotoUrl !== user.profilePhotoUrl) {
+      try {
+        await deleteS3ObjectByUrl(previousPhotoUrl);
+      } catch (deleteErr) {
+        console.warn("[User] Could not delete previous profile photo:", deleteErr?.message || deleteErr);
+      }
+    }
+
+    const profileData = await formatUserProfileResponse(user);
+    const io = getIo();
+    if (io) {
+      io.emit("user:profile-updated", {
+        id: String(user._id),
+        name: user.name,
+        email: user.email,
+        profilePhotoUrl: profileData.profilePhotoUrl,
+      });
+      io.emit("dashboard:updated");
+    }
+
+    return res.status(200).json({
+      message: "Profile photo updated successfully",
+      fileUrl,
+      data: profileData,
+    });
+  } catch (error) {
+    const status = error.message?.includes("Only image") ? 400 : 500;
+    console.error("[User] uploadUserProfilePhoto:", error);
+    return res.status(status).json({
+      message: status === 400 ? error.message : "Failed to upload profile photo",
+      error: error.message,
+    });
+  }
+};
+
+export const removeUserProfilePhoto = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid user id" });
+    }
+
+    if (String(req.userId) !== String(id)) {
+      return res.status(403).json({ message: "You can only update your own profile photo" });
+    }
+
+    const user = await User.findById(id);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const previousPhotoUrl = user.profilePhotoUrl;
+    user.profilePhotoUrl = "";
+    await user.save();
+
+    if (previousPhotoUrl) {
+      try {
+        await deleteS3ObjectByUrl(previousPhotoUrl);
+      } catch (deleteErr) {
+        console.warn("[User] Could not delete profile photo:", deleteErr?.message || deleteErr);
+      }
+    }
+
+    const profileData = await formatUserProfileResponse(user);
+    const io = getIo();
+    if (io) {
+      io.emit("user:profile-updated", {
+        id: String(user._id),
+        name: user.name,
+        email: user.email,
+        profilePhotoUrl: "",
+      });
+      io.emit("dashboard:updated");
+    }
+
+    return res.status(200).json({
+      message: "Profile photo removed",
+      data: profileData,
+    });
+  } catch (error) {
+    console.error("[User] removeUserProfilePhoto:", error);
+    return res.status(500).json({
+      message: "Failed to remove profile photo",
+      error: error.message,
+    });
   }
 };

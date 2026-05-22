@@ -15,6 +15,11 @@ const userSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    profilePhotoUrl: {
+      type: String,
+      default: "",
+      trim: true,
+    },
     allergies: {
       type: [String],
       default: [],

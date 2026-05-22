@@ -8,7 +8,10 @@ import {
   getCurrentUserMe,
   getUsers,
   getUserProfile,
+  handleUserProfilePhotoUpload,
   loginUser,
+  removeUserProfilePhoto,
+  uploadUserProfilePhoto,
   resetPassword,
   signupUser,
   updateUserAllergies,
@@ -33,6 +36,19 @@ router.post("/reset-password", resetPassword);
 router.get("/me", authenticateUser, getCurrentUserMe);
 router.put("/:id/allergies", authenticateUser, requireSelfUserId("id"), updateUserAllergies);
 router.get("/:id/profile", authenticateUser, requireSelfUserId("id"), getUserProfile);
+router.post(
+  "/:id/profile/photo",
+  authenticateUser,
+  requireSelfUserId("id"),
+  handleUserProfilePhotoUpload,
+  uploadUserProfilePhoto,
+);
+router.delete(
+  "/:id/profile/photo",
+  authenticateUser,
+  requireSelfUserId("id"),
+  removeUserProfilePhoto,
+);
 router.delete("/:id", authenticateUser, requireSelfUserId("id"), deleteUser);
 
 // Admin only (same paths as before for scanly-web compatibility)

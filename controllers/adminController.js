@@ -1,6 +1,6 @@
 import bcrypt from "bcryptjs";
-import multer from "multer";
 import Admin from "../models/adminModel.js";
+import { createImageUpload, handleImageUpload } from "../middleware/imageUpload.js";
 import { signAdminToken } from "../utils/jwt.js";
 import {
   createPresignedImageUpload,
@@ -11,25 +11,8 @@ import {
   uploadImageBuffer,
 } from "../utils/s3Helpers.js";
 
-const ADMIN_PHOTO_MIME_TYPES = new Set([
-  "image/jpeg",
-  "image/jpg",
-  "image/png",
-  "image/webp",
-  "image/gif",
-]);
-
-export const adminProfilePhotoUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
-  fileFilter: (_req, file, cb) => {
-    if (ADMIN_PHOTO_MIME_TYPES.has(String(file.mimetype || "").toLowerCase())) {
-      cb(null, true);
-      return;
-    }
-    cb(new Error("Only image files are allowed (JPEG, PNG, WebP, or GIF)."));
-  },
-}).single("photo");
+export const adminProfilePhotoUpload = createImageUpload("photo");
+export const handleAdminProfilePhotoUpload = handleImageUpload(adminProfilePhotoUpload);
 
 const PASSWORD_SALT_ROUNDS = Number(process.env.PASSWORD_SALT_ROUNDS || 10);
 
