@@ -63,7 +63,21 @@ const normalizeReturnBase = (raw) => {
   const host = u.host;
   if (!host) return { error: "Return base URL is missing a host." };
   const base = `${u.protocol}//${host}`;
-  return { base, hostname: u.hostname };
+  return { base, hostname: u.hostname, host };
+};
+
+/** Host the client used to reach this API (reverse-proxy aware). */
+const getIncomingApiHost = (req) =>
+  String(req.get?.("x-forwarded-host") || req.get?.("host") || "")
+    .split(",")[0]
+    .trim()
+    .toLowerCase();
+
+/** Allow returnBaseUrl when it matches the request Host (production public API). */
+const clientReturnMatchesIncomingHost = (norm, req) => {
+  const incoming = getIncomingApiHost(req);
+  if (!incoming || !norm?.host) return false;
+  return norm.host.toLowerCase() === incoming;
 };
 
 /**
@@ -103,6 +117,9 @@ const resolveReturnBaseFromClient = (req) => {
   if (norm.error) {
     if (norm.error === "Return base URL is empty.") return { kind: "empty" };
     return { kind: "error", error: norm.error };
+  }
+  if (clientReturnMatchesIncomingHost(norm, req)) {
+    return { kind: "ok", base: norm.base, source: "client-host" };
   }
   if (!isClientTrustedReturnHost(norm.hostname)) {
     return {

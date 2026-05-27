@@ -21,6 +21,9 @@ const app = express();
 const port = process.env.PORT || 5000;
 const server = http.createServer(app);
 
+// So Stripe returnBaseUrl can match X-Forwarded-Host behind nginx/Caddy on production.
+app.set("trust proxy", 1);
+
 app.use(
   cors({
     origin: true,
