@@ -4,6 +4,7 @@ import {
   analyzeScan,
   askAssistant,
   extractIngredientsTextFromImage,
+  getScanById,
   getScanHistory,
 } from "../controllers/scanController.js";
 import { authenticateUser } from "../middleware/auth.js";
@@ -24,5 +25,6 @@ router.post("/ocr", authenticateUser, upload.single("image"), extractIngredients
 router.post("/analyze", authenticateUser, analyzeScan);
 router.post("/assistant", authenticateUser, askAssistant);
 router.get("/history", authenticateUser, getScanHistory);
+router.get("/:id", authenticateUser, getScanById);
 
 export default router;

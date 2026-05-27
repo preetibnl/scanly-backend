@@ -234,6 +234,37 @@ export const getScanHistory = async (req, res) => {
   }
 };
 
+export const getScanById = async (req, res) => {
+  try {
+    const userId = req.userId;
+    const scanId = String(req.params?.id || "").trim();
+    if (!mongoose.Types.ObjectId.isValid(scanId)) {
+      return res.status(400).json({ message: "Invalid scan id" });
+    }
+
+    const scan = await Scan.findOne({ _id: scanId, userId }).lean();
+    if (!scan) {
+      return res.status(404).json({ message: "Scan not found" });
+    }
+
+    return res.status(200).json({
+      data: {
+        scanId: scan._id,
+        status: scan.status,
+        summary: scan.summary,
+        ingredientsText: scan.ingredientsText,
+        ingredientItems: scan.ingredientItems ?? [],
+        matchedAllergens: scan.matchedAllergens ?? [],
+        createdAt: scan.createdAt,
+      },
+    });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "Failed to fetch scan", error: error.message });
+  }
+};
+
 export const askAssistant = async (req, res) => {
   const flowStart = Date.now();
   try {
