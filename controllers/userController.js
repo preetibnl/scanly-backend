@@ -3,7 +3,7 @@ import Scan from "../models/scanModel.js";
 import mongoose from "mongoose";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
-import { sendResetOtpEmail } from "../utils/mail.js";
+import { sendResetOtpEmail, sendSignupWelcomeEmail } from "../utils/mail.js";
 import { getIo } from "../socket.js";
 import { signUserToken } from "../utils/jwt.js";
 import { createImageUpload, handleImageUpload } from "../middleware/imageUpload.js";
@@ -62,6 +62,17 @@ export const signupUser = async (req, res) => {
 
     const passwordHash = await bcrypt.hash(password, PASSWORD_SALT_ROUNDS);
     const user = await User.create({ name, email, password: passwordHash });
+
+    try {
+      await sendSignupWelcomeEmail({ to: user.email, name: user.name });
+      console.log(`[Auth] signup welcome email sent to=${user.email}`);
+    } catch (mailErr) {
+      // Non-blocking: signup should succeed even if email provider is down.
+      console.error(
+        `[Auth] signup welcome email failed to=${user.email} message=${mailErr?.message || mailErr}`,
+      );
+    }
+
     const io = getIo();
     if (io) {
       io.emit("user:registered", {

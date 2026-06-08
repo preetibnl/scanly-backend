@@ -14,6 +14,7 @@ import stripeRoutes from "./routes/stripeRoutes.js";
 import stripeWebhookRoutes from "./routes/stripeWebhookRoutes.js";
 import planRoutes from "./routes/planRoutes.js";
 import { initSocket } from "./socket.js";
+import { logMailStartupProbe } from "./utils/mail.js";
 
 dotenv.config();
 
@@ -58,6 +59,7 @@ const startServer = async () => {
     await connectDB();
     await ensureAdminAccount();
     await logStripeStartupProbe();
+    await logMailStartupProbe();
     initSocket(server);
     server.listen(port, "0.0.0.0", () => {
       console.log(`Server is running on http://0.0.0.0:${port}`);

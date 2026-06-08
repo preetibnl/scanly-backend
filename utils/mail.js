@@ -27,9 +27,34 @@ const getTransporter = () => {
   return transporter;
 };
 
+const getFromAddress = () => process.env.SMTP_FROM || process.env.SMTP_USER;
+
+export const logMailStartupProbe = async () => {
+  const host = process.env.SMTP_HOST;
+  const user = process.env.SMTP_USER;
+  const pass = process.env.SMTP_PASS;
+
+  if (!host || !user || !pass) {
+    console.warn(
+      "[Mail] SMTP not fully configured. Missing SMTP_HOST/SMTP_USER/SMTP_PASS. Email sending is disabled.",
+    );
+    return;
+  }
+
+  try {
+    const smtpTransporter = getTransporter();
+    await smtpTransporter.verify();
+    console.log(`[Mail] SMTP startup probe OK host=${host} user=${user}`);
+  } catch (error) {
+    console.error(
+      `[Mail] SMTP startup probe failed host=${host} user=${user} message=${error?.message || error}`,
+    );
+  }
+};
+
 export const sendResetPasswordEmail = async ({ to, resetLink }) => {
   const smtpTransporter = getTransporter();
-  const from = process.env.SMTP_FROM || process.env.SMTP_USER;
+  const from = getFromAddress();
 
   await smtpTransporter.sendMail({
     from,
@@ -61,7 +86,7 @@ export const sendResetPasswordEmail = async ({ to, resetLink }) => {
 
 export const sendResetOtpEmail = async ({ to, otp }) => {
   const smtpTransporter = getTransporter();
-  const from = process.env.SMTP_FROM || process.env.SMTP_USER;
+  const from = getFromAddress();
 
   await smtpTransporter.sendMail({
     from,
@@ -82,6 +107,34 @@ export const sendResetOtpEmail = async ({ to, otp }) => {
         <p style="font-size: 28px; letter-spacing: 4px; font-weight: 700; margin: 14px 0;">${otp}</p>
         <p style="font-size: 13px; color: #555;">This OTP expires in 10 minutes.</p>
         <p style="font-size: 13px; color: #555;">If you did not request this, you can ignore this email.</p>
+      </div>
+    `,
+  });
+};
+
+export const sendSignupWelcomeEmail = async ({ to, name }) => {
+  const smtpTransporter = getTransporter();
+  const from = getFromAddress();
+  const firstName = String(name || "").trim().split(/\s+/)[0] || "there";
+
+  await smtpTransporter.sendMail({
+    from,
+    to,
+    subject: "Welcome to Scanly",
+    text: [
+      `Hi ${firstName},`,
+      "",
+      "Welcome to Scanly. Your account is ready.",
+      "You can now scan labels and check ingredients against your allergy profile.",
+      "",
+      "If you did not create this account, please contact support.",
+    ].join("\n"),
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.5;">
+        <h2 style="margin-bottom: 8px;">Welcome to Scanly</h2>
+        <p>Hi ${firstName},</p>
+        <p>Your account is ready. You can now scan labels and check ingredients against your allergy profile.</p>
+        <p style="font-size: 13px; color: #555;">If you did not create this account, please contact support.</p>
       </div>
     `,
   });
