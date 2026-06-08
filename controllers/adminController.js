@@ -122,7 +122,9 @@ export const changeAdminPassword = async (req, res) => {
     }
 
     if (String(currentPassword) === trimmedNew) {
-      return res.status(400).json({ message: "Choose a password different from your current one." });
+      return res.status(400).json({
+        message: "New Password cannot be the same as the Current Password.",
+      });
     }
 
     admin.passwordHash = await bcrypt.hash(trimmedNew, PASSWORD_SALT_ROUNDS);

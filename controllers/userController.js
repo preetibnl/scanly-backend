@@ -46,6 +46,18 @@ export const mapUserToAdminListItem = async (user, scanCount = 0) => {
 };
 
 const PASSWORD_SALT_ROUNDS = Number(process.env.PASSWORD_SALT_ROUNDS || 10);
+const SAME_PASSWORD_MESSAGE =
+  "New Password cannot be the same as the Current Password.";
+
+const passwordMatchesStored = async (candidate, storedHash) => {
+  const trimmed = String(candidate || "").trim();
+  const stored = String(storedHash || "");
+  if (!trimmed || !stored) return false;
+  if (stored.startsWith("$2")) {
+    return bcrypt.compare(trimmed, stored);
+  }
+  return stored === trimmed;
+};
 
 export const signupUser = async (req, res) => {
   try {
@@ -414,18 +426,15 @@ export const getCurrentUserMe = async (req, res) => {
 
 export const forgotPassword = async (req, res) => {
   try {
-    const { email } = req.body;
+    const normalizedEmail = String(req.body?.email || "").trim().toLowerCase();
 
-    if (!email) {
+    if (!normalizedEmail) {
       return res.status(400).json({ message: "Email is required" });
     }
 
-    const user = await User.findOne({ email });
-    // Do not reveal if a user exists for this email.
+    const user = await User.findOne({ email: normalizedEmail });
     if (!user) {
-      return res.status(200).json({
-        message: "If this email is registered, an OTP has been sent.",
-      });
+      return res.status(404).json({ message: "User not found." });
     }
 
     const otp = String(Math.floor(100000 + Math.random() * 900000));
@@ -517,7 +526,12 @@ export const resetPassword = async (req, res) => {
       return res.status(400).json({ message: "Invalid or expired reset link" });
     }
 
-    user.password = await bcrypt.hash(newPassword, PASSWORD_SALT_ROUNDS);
+    const trimmedNewPassword = String(newPassword).trim();
+    if (await passwordMatchesStored(trimmedNewPassword, user.password)) {
+      return res.status(400).json({ message: SAME_PASSWORD_MESSAGE });
+    }
+
+    user.password = await bcrypt.hash(trimmedNewPassword, PASSWORD_SALT_ROUNDS);
     user.resetPasswordTokenHash = null;
     user.resetPasswordExpiresAt = null;
     user.resetOtpHash = null;

@@ -112,6 +112,113 @@ export const sendResetOtpEmail = async ({ to, otp }) => {
   });
 };
 
+const formatPlanPeriodEnd = (value) => {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+};
+
+export const sendSubscriptionPurchaseEmail = async ({
+  to,
+  name,
+  planTitle,
+  amountDisplay,
+  intervalLabel,
+  periodEnd,
+}) => {
+  const smtpTransporter = getTransporter();
+  const from = getFromAddress();
+  const firstName = String(name || "").trim().split(/\s+/)[0] || "there";
+  const planLine = [planTitle, amountDisplay, intervalLabel].filter(Boolean).join(" — ");
+  const renewalLine = periodEnd
+    ? `Your current billing period ends on ${periodEnd}.`
+    : "";
+
+  await smtpTransporter.sendMail({
+    from,
+    to,
+    subject: "Your Scanly Premium subscription is active",
+    text: [
+      `Hi ${firstName},`,
+      "",
+      "Thank you for subscribing to Scanly Premium.",
+      planLine ? `Plan: ${planLine}` : "",
+      renewalLine,
+      "",
+      "You now have access to unlimited scans and premium safety features.",
+      "",
+      "Manage billing anytime in the app under Profile → Billing and plan.",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.5;">
+        <h2 style="margin-bottom: 8px;">Scanly Premium is active</h2>
+        <p>Hi ${firstName},</p>
+        <p>Thank you for subscribing to Scanly Premium.</p>
+        ${planLine ? `<p><strong>Plan:</strong> ${planLine}</p>` : ""}
+        ${renewalLine ? `<p>${renewalLine}</p>` : ""}
+        <p>You now have access to unlimited scans and premium safety features.</p>
+        <p style="font-size: 13px; color: #555;">Manage billing anytime in the app under Profile → Billing and plan.</p>
+      </div>
+    `,
+  });
+};
+
+export const sendSubscriptionCancellationEmail = async ({
+  to,
+  name,
+  planTitle,
+  amountDisplay,
+  intervalLabel,
+  periodEnd,
+}) => {
+  const smtpTransporter = getTransporter();
+  const from = getFromAddress();
+  const firstName = String(name || "").trim().split(/\s+/)[0] || "there";
+  const planLine = [planTitle, amountDisplay, intervalLabel].filter(Boolean).join(" — ");
+  const accessLine = periodEnd
+    ? `You keep Premium access until ${periodEnd}. After that, your plan will not renew automatically.`
+    : "Your plan will not renew automatically at the end of the current billing period.";
+
+  await smtpTransporter.sendMail({
+    from,
+    to,
+    subject: "Your Scanly subscription cancellation is confirmed",
+    text: [
+      `Hi ${firstName},`,
+      "",
+      "This confirms that your Scanly Premium subscription has been set to cancel at the end of the current billing period.",
+      planLine ? `Plan: ${planLine}` : "",
+      accessLine,
+      "",
+      "You can turn AutoPay back on anytime before that date in Profile → Billing and plan.",
+      "",
+      "If you did not request this change, please contact billing support from the app.",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.5;">
+        <h2 style="margin-bottom: 8px;">Subscription cancellation confirmed</h2>
+        <p>Hi ${firstName},</p>
+        <p>This confirms that your Scanly Premium subscription has been set to cancel at the end of the current billing period.</p>
+        ${planLine ? `<p><strong>Plan:</strong> ${planLine}</p>` : ""}
+        <p>${accessLine}</p>
+        <p>You can turn AutoPay back on anytime before that date in Profile → Billing and plan.</p>
+        <p style="font-size: 13px; color: #555;">If you did not request this change, please contact billing support from the app.</p>
+      </div>
+    `,
+  });
+};
+
+export { formatPlanPeriodEnd };
+
 export const sendSignupWelcomeEmail = async ({ to, name }) => {
   const smtpTransporter = getTransporter();
   const from = getFromAddress();

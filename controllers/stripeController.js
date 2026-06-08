@@ -2,6 +2,11 @@ import Stripe from "stripe";
 import mongoose from "mongoose";
 import User from "../models/userModel.js";
 import { getSubscriptionPlanSettings } from "./subscriptionPlanConfigController.js";
+import {
+  formatPlanPeriodEnd,
+  sendSubscriptionCancellationEmail,
+  sendSubscriptionPurchaseEmail,
+} from "../utils/mail.js";
 
 let stripeSingleton = null;
 
@@ -326,6 +331,75 @@ const ensureSubscriptionAutoPayOn = async (stripe, subscription) => {
   return sub;
 };
 
+const shouldNotifySubscriptionPurchase = (previousUser, subscription, options) => {
+  if (!options.notifyPurchase) return false;
+  if (!premiumStatuses.has(subscription.status)) return false;
+
+  const wasPremium = (previousUser?.plan || "free").toLowerCase() === "premium";
+  if (!wasPremium) return true;
+
+  const previousSubId = String(previousUser?.stripeSubscriptionId || "");
+  const nextSubId = String(subscription.id || "");
+  return Boolean(nextSubId && previousSubId !== nextSubId);
+};
+
+const shouldNotifySubscriptionCancellation = (previousUser, subscription) => {
+  if (!premiumStatuses.has(subscription.status)) return false;
+  const wasCanceling = Boolean(previousUser?.subscriptionCancelAtPeriodEnd);
+  const isCanceling = Boolean(subscription.cancel_at_period_end);
+  return !wasCanceling && isCanceling;
+};
+
+const notifySubscriptionEmails = async (previousUser, subscription, options) => {
+  if (!previousUser?.email) return;
+
+  const price = subscription.items?.data?.[0]?.price;
+  const display = planDisplayFromPrice(price);
+  const periodEnd = formatPlanPeriodEnd(
+    subscription.current_period_end
+      ? new Date(subscription.current_period_end * 1000)
+      : previousUser.subscriptionCurrentPeriodEnd,
+  );
+  const mailPayload = {
+    to: previousUser.email,
+    name: previousUser.name,
+    planTitle: display.planTitle,
+    amountDisplay: display.amountDisplay,
+    intervalLabel: display.intervalLabel,
+    periodEnd,
+  };
+
+  const tasks = [];
+
+  if (shouldNotifySubscriptionPurchase(previousUser, subscription, options)) {
+    tasks.push(
+      sendSubscriptionPurchaseEmail(mailPayload).then(() => {
+        console.log(`[Stripe] subscription purchase email sent to=${previousUser.email}`);
+      }),
+    );
+  }
+
+  if (shouldNotifySubscriptionCancellation(previousUser, subscription)) {
+    tasks.push(
+      sendSubscriptionCancellationEmail(mailPayload).then(() => {
+        console.log(`[Stripe] subscription cancellation email sent to=${previousUser.email}`);
+      }),
+    );
+  }
+
+  if (!tasks.length) return;
+
+  await Promise.allSettled(tasks).then((results) => {
+    results.forEach((result) => {
+      if (result.status === "rejected") {
+        console.error(
+          `[Stripe] subscription email failed to=${previousUser.email} message=${result.reason?.message || result.reason}`,
+        );
+      }
+    });
+  });
+};
+
 const syncUserFromSubscription = async (
   subscription,
   fallbackUserId,
@@ -336,6 +410,14 @@ const syncUserFromSubscription = async (
     console.warn("[Stripe] syncUserFromSubscription: missing or invalid userId", {
       subscriptionId: subscription.id,
     });
+    return;
+  }
+
+  const previousUser = await User.findById(userId).select(
+    "name email plan stripeSubscriptionId subscriptionCancelAtPeriodEnd subscriptionCurrentPeriodEnd",
+  );
+  if (!previousUser) {
+    console.warn("[Stripe] syncUserFromSubscription: user not found", { userId });
     return;
   }
 
@@ -371,6 +453,14 @@ const syncUserFromSubscription = async (
       isPremium ? "premium" : "free"
     } status=${sub.status} autoPay=${isPremium && !sub.cancel_at_period_end}`,
   );
+
+  try {
+    await notifySubscriptionEmails(previousUser, sub, options);
+  } catch (mailErr) {
+    console.error(
+      `[Stripe] subscription email notification failed userId=${userId} message=${mailErr?.message || mailErr}`,
+    );
+  }
 };
 
 const checkoutLineItems = async (billingInterval = "month") => {
@@ -567,11 +657,18 @@ export const syncCheckoutSessionById = async (sessionId) => {
     return { synced: false, userId };
   }
   if (typeof subscription === "string") {
-    subscription = await stripe.subscriptions.retrieve(subscription);
+    subscription = await stripe.subscriptions.retrieve(subscription, {
+      expand: ["items.data.price"],
+    });
+  } else if (!subscription.items?.data?.[0]?.price?.unit_amount) {
+    subscription = await stripe.subscriptions.retrieve(subscription.id, {
+      expand: ["items.data.price"],
+    });
   }
 
   await syncUserFromSubscription(subscription, userId, {
     enableAutoPayAfterPurchase: true,
+    notifyPurchase: true,
   });
   console.log(`[Stripe] syncCheckoutSessionById: done userId=${userId} sub=${subscription.id}`);
   return { synced: true, userId: String(userId || "") };
@@ -751,7 +848,10 @@ export const updateAutoPay = async (req, res) => {
     const updated = await stripe.subscriptions.update(user.stripeSubscriptionId, {
       cancel_at_period_end: !enabled,
     });
-    await syncUserFromSubscription(updated, userId);
+    const updatedWithPrice = await stripe.subscriptions.retrieve(updated.id, {
+      expand: ["items.data.price"],
+    });
+    await syncUserFromSubscription(updatedWithPrice, userId);
     console.log(`[Stripe] updateAutoPay: user ${userId} enabled=${enabled}`);
 
     req.params = { userId };
@@ -1076,15 +1176,23 @@ export const handleStripeWebhook = async (req, res) => {
             typeof session.subscription === "string"
               ? session.subscription
               : session.subscription.id;
-          const sub = await stripe.subscriptions.retrieve(subId);
-          await syncUserFromSubscription(sub, userId);
+          const sub = await stripe.subscriptions.retrieve(subId, {
+            expand: ["items.data.price"],
+          });
+          await syncUserFromSubscription(sub, userId, { notifyPurchase: true });
         }
         break;
       }
       case "customer.subscription.updated":
       case "customer.subscription.deleted": {
         const sub = event.data.object;
-        await syncUserFromSubscription(sub, null);
+        let expandedSub = sub;
+        if (sub?.id && !sub.items?.data?.[0]?.price?.unit_amount) {
+          expandedSub = await stripe.subscriptions.retrieve(sub.id, {
+            expand: ["items.data.price"],
+          });
+        }
+        await syncUserFromSubscription(expandedSub, null);
         break;
       }
       default:
