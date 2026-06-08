@@ -137,10 +137,16 @@ const resolveReturnBaseFromClient = (req) => {
  * @returns {{ base: string, source?: string } | { error: string }}
  */
 const resolveCheckoutReturnBase = (req) => {
+  const client = resolveReturnBaseFromClient(req);
+  // When the app hits this API host directly (LAN / same public host), trust that origin
+  // for Stripe redirects even if PUBLIC_API_BASE_URL points elsewhere.
+  if (client.kind === "ok" && client.source === "client-host") {
+    return { base: client.base, source: client.source };
+  }
+
   const env = resolveReturnBaseFromEnv();
   if (env.kind === "ok") return { base: env.base, source: env.source };
 
-  const client = resolveReturnBaseFromClient(req);
   if (client.kind === "ok") {
     if (env.kind === "error") {
       console.warn(
@@ -687,8 +693,6 @@ export const createCheckoutSession = async (req, res) => {
       metadata: { userId: String(user._id), billingInterval },
       subscription_data: {
         metadata: { userId: String(user._id), billingInterval },
-        // Recurring AutoPay from first successful checkout (monthly or yearly).
-        collection_method: "charge_automatically",
       },
       payment_method_collection: "always",
       client_reference_id: String(user._id),
