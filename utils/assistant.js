@@ -1,11 +1,13 @@
 const defaultAllergyProfile = [
   "milk",
-  "nuts",
+  "eggs",
+  "peanuts",
+  "tree nuts",
   "gluten",
   "soy",
-  "eggs",
-  "peanut",
-  "tree nuts",
+  "fish",
+  "shellfish",
+  "sesame",
 ];
 
 const maskOpenAiKey = (key) => {
