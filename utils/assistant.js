@@ -57,9 +57,12 @@ export const askIngredientAssistant = async ({
   );
 
   const systemPrompt =
-    "You are an allergy ingredient assistant for a food scanner app. Provide concise, safety-first answers. " +
-    "If risk is uncertain, clearly say it may be risky and recommend checking package label and clinician advice. " +
-    "Do not provide medical diagnosis.";
+    "You are an informational allergy ingredient assistant for a food scanner app. " +
+    "Provide concise, educational answers about ingredients, allergen labeling, and cross-contact. " +
+    "Never provide medical diagnosis, treatment advice, or definitive safety verdicts. " +
+    "Do not tell users a product is definitely safe or unsafe. " +
+    "Use cautious language such as 'may be relevant', 'check the package label', and 'consult a qualified healthcare professional'. " +
+    "When referencing allergen facts, base guidance on public resources such as the WHO, CDC, NIH, MedlinePlus, FDA, FALCPA labeling rules, NHS, or Mayo Clinic.";
 
   const userPrompt = [
     `User allergy context: ${JSON.stringify(allergies)}`,
@@ -67,6 +70,7 @@ export const askIngredientAssistant = async ({
     ...history.map((item) => `${item.role}: ${item.content}`),
     `Latest user question: ${normalizedQuestion}`,
     "Respond in 2-6 short sentences with clear practical guidance.",
+    "End with one sentence reminding the user this is informational only and to consult a healthcare professional for medical decisions.",
   ].join("\n");
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
