@@ -48,6 +48,30 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    appleProductId: {
+      type: String,
+      default: null,
+    },
+    appleOriginalTransactionId: {
+      type: String,
+      default: null,
+    },
+    appleTransactionId: {
+      type: String,
+      default: null,
+    },
+    appleEnvironment: {
+      type: String,
+      default: null,
+    },
+    appleAutoRenewStatus: {
+      type: String,
+      default: "0",
+    },
+    appleLatestReceiptData: {
+      type: String,
+      default: null,
+    },
     resetPasswordTokenHash: {
       type: String,
       default: null,

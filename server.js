@@ -13,6 +13,7 @@ import scanRoutes from "./routes/scanRoutes.js";
 import stripeRoutes from "./routes/stripeRoutes.js";
 import stripeWebhookRoutes from "./routes/stripeWebhookRoutes.js";
 import planRoutes from "./routes/planRoutes.js";
+import iapRoutes from "./routes/iapRoutes.js";
 import { initSocket } from "./socket.js";
 import { logMailStartupProbe } from "./utils/mail.js";
 
@@ -52,6 +53,7 @@ app.use("/api/users", userRoutes);
 app.use("/api/s3", s3Routes);
 app.use("/api/scans", scanRoutes);
 app.use("/api/stripe", stripeRoutes);
+app.use("/api/iap", iapRoutes);
 app.use("/api/plans", planRoutes);
 
 const startServer = async () => {
