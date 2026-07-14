@@ -1,12 +1,17 @@
+import crypto from "crypto";
 import mongoose from "mongoose";
 import User from "../models/userModel.js";
 
-const IOS_MONTHLY_PRODUCT_ID = "com.makescanly.scanlyapp.premium.monthly";
-const IOS_YEARLY_PRODUCT_ID = "com.makescanly.scanlyapp.premium.yearly";
+const IOS_MONTHLY_PRODUCT_ID = "monthly_subscription";
+const IOS_YEARLY_PRODUCT_ID = "yearly_subscription";
+/** Current App Store Connect IDs plus previous reverse-DNS IDs (migration safety). */
 const SUPPORTED_PRODUCT_IDS = new Set([
   IOS_MONTHLY_PRODUCT_ID,
   IOS_YEARLY_PRODUCT_ID,
+  "com.makescanly.scanlyapp.premium.monthly",
+  "com.makescanly.scanlyapp.premium.yearly",
 ]);
+const EXPECTED_BUNDLE_ID = "com.makescanly.scanlyapp";
 
 const APPLE_PRODUCTION_VERIFY_URL = "https://buy.itunes.apple.com/verifyReceipt";
 const APPLE_SANDBOX_VERIFY_URL = "https://sandbox.itunes.apple.com/verifyReceipt";
@@ -18,11 +23,11 @@ const parseDateMs = (value) => {
 
 const normalizeAppleStatus = (active) => (active ? "active" : "canceled");
 
-const toBillingInterval = (productId) =>
-  productId === IOS_YEARLY_PRODUCT_ID ? "year" : "month";
-
 const toDisplayByProductId = (productId) => {
-  if (productId === IOS_YEARLY_PRODUCT_ID) {
+  if (
+    productId === IOS_YEARLY_PRODUCT_ID ||
+    productId === "com.makescanly.scanlyapp.premium.yearly"
+  ) {
     return {
       amountDisplay: "$49.99",
       intervalLabel: "per year",
@@ -36,6 +41,70 @@ const toDisplayByProductId = (productId) => {
     planTitle: "Premium monthly",
     billingInterval: "month",
   };
+};
+
+const looksLikeJws = (value) => String(value || "").split(".").length === 3;
+
+const decodeBase64UrlJson = (segment) => {
+  const normalized = String(segment || "")
+    .replace(/-/g, "+")
+    .replace(/_/g, "/");
+  const pad = normalized.length % 4 === 0 ? "" : "=".repeat(4 - (normalized.length % 4));
+  return JSON.parse(Buffer.from(`${normalized}${pad}`, "base64").toString("utf8"));
+};
+
+const base64UrlToBuffer = (segment) => {
+  const normalized = String(segment || "")
+    .replace(/-/g, "+")
+    .replace(/_/g, "/");
+  const pad = normalized.length % 4 === 0 ? "" : "=".repeat(4 - (normalized.length % 4));
+  return Buffer.from(`${normalized}${pad}`, "base64");
+};
+
+const derToPemCertificate = (derBase64) => {
+  const lines = String(derBase64 || "").match(/.{1,64}/g) || [];
+  return `-----BEGIN CERTIFICATE-----\n${lines.join("\n")}\n-----END CERTIFICATE-----\n`;
+};
+
+/**
+ * Verify StoreKit 2 transaction JWS using the embedded x5c leaf certificate.
+ * Payload fields: productId, bundleId, expiresDate, transactionId, environment, etc.
+ */
+const verifyAndDecodeAppleJws = (jws) => {
+  const parts = String(jws || "").split(".");
+  if (parts.length !== 3) {
+    throw new Error("Invalid Apple transaction token.");
+  }
+
+  const [headerB64, payloadB64, signatureB64] = parts;
+  const header = decodeBase64UrlJson(headerB64);
+  const payload = decodeBase64UrlJson(payloadB64);
+  const leafCert = Array.isArray(header?.x5c) ? header.x5c[0] : null;
+  if (!leafCert) {
+    throw new Error("Apple transaction token is missing a certificate.");
+  }
+
+  const publicKey = crypto.createPublicKey(derToPemCertificate(leafCert));
+  const signedContent = Buffer.from(`${headerB64}.${payloadB64}`);
+  const signature = base64UrlToBuffer(signatureB64);
+  const algorithm = String(header?.alg || "ES256").toUpperCase();
+  const hash = algorithm.includes("512")
+    ? "SHA512"
+    : algorithm.includes("384")
+      ? "SHA384"
+      : "SHA256";
+
+  const isValid = crypto.verify(
+    hash,
+    signedContent,
+    { key: publicKey, dsaEncoding: "ieee-p1363" },
+    signature,
+  );
+  if (!isValid) {
+    throw new Error("Apple transaction signature verification failed.");
+  }
+
+  return payload;
 };
 
 const postVerifyReceipt = async (url, payload) => {
@@ -138,22 +207,26 @@ const toSummaryPayload = (user) => {
   };
 };
 
+const clearAppleSubscription = async ({ user, receiptData, environment }) => {
+  user.plan = "free";
+  user.subscriptionStatus = "canceled";
+  user.subscriptionCurrentPeriodEnd = null;
+  user.subscriptionCancelAtPeriodEnd = false;
+  user.appleProductId = null;
+  user.appleOriginalTransactionId = null;
+  user.appleTransactionId = null;
+  user.appleEnvironment = environment || null;
+  user.appleAutoRenewStatus = "0";
+  user.appleLatestReceiptData = receiptData || null;
+  await user.save();
+  return { active: false, productId: null };
+};
+
 const syncUserFromValidatedReceipt = async ({ user, receiptData, verifyResult, environment }) => {
   const latestReceiptItem = getLatestSubscriptionReceiptItem(verifyResult);
 
   if (!latestReceiptItem) {
-    user.plan = "free";
-    user.subscriptionStatus = "canceled";
-    user.subscriptionCurrentPeriodEnd = null;
-    user.subscriptionCancelAtPeriodEnd = false;
-    user.appleProductId = null;
-    user.appleOriginalTransactionId = null;
-    user.appleTransactionId = null;
-    user.appleEnvironment = environment || null;
-    user.appleAutoRenewStatus = "0";
-    user.appleLatestReceiptData = receiptData;
-    await user.save();
-    return { active: false, productId: null };
+    return clearAppleSubscription({ user, receiptData, environment });
   }
 
   const productId = String(latestReceiptItem.product_id || "");
@@ -181,11 +254,72 @@ const syncUserFromValidatedReceipt = async ({ user, receiptData, verifyResult, e
   return { active: isActive, productId };
 };
 
+const syncUserFromJwsPayload = async ({ user, jws, payload }) => {
+  const productId = String(payload?.productId || "").trim();
+  const bundleId = String(payload?.bundleId || "").trim();
+  const environment = String(payload?.environment || "Unknown");
+
+  if (bundleId && bundleId !== EXPECTED_BUNDLE_ID) {
+    throw new Error("Apple transaction bundle ID does not match this app.");
+  }
+  if (!SUPPORTED_PRODUCT_IDS.has(productId)) {
+    return clearAppleSubscription({
+      user,
+      receiptData: jws,
+      environment,
+    });
+  }
+
+  if (payload?.revocationDate) {
+    return clearAppleSubscription({
+      user,
+      receiptData: jws,
+      environment,
+    });
+  }
+
+  const expiresDateMs = parseDateMs(payload?.expiresDate);
+  const nowMs = Date.now();
+  // Some non-expiring shapes omit expiresDate; treat missing expiry as active when product matches.
+  const isActive = expiresDateMs > 0 ? expiresDateMs > nowMs : true;
+  const autoRenewStatus =
+    payload?.autoRenewStatus != null
+      ? String(payload.autoRenewStatus)
+      : isActive
+        ? "1"
+        : "0";
+
+  user.plan = isActive ? "premium" : "free";
+  user.subscriptionStatus = normalizeAppleStatus(isActive);
+  user.subscriptionCurrentPeriodEnd = expiresDateMs > 0 ? new Date(expiresDateMs) : null;
+  user.subscriptionCancelAtPeriodEnd = isActive ? autoRenewStatus === "0" : false;
+  user.appleProductId = productId || null;
+  user.appleOriginalTransactionId =
+    String(payload?.originalTransactionId || "") || null;
+  user.appleTransactionId = String(payload?.transactionId || "") || null;
+  user.appleEnvironment = environment || null;
+  user.appleAutoRenewStatus = autoRenewStatus;
+  user.appleLatestReceiptData = jws;
+  await user.save();
+
+  return { active: isActive, productId };
+};
+
 export const validateIosSubscriptionReceipt = async (req, res) => {
   try {
-    const receiptData = String(req.body?.receiptData || "").trim();
-    if (!receiptData) {
-      return res.status(400).json({ message: "receiptData is required" });
+    const jwsRaw = String(req.body?.jws || "").trim();
+    const receiptRaw = String(req.body?.receiptData || "").trim();
+    const jwsToken = looksLikeJws(jwsRaw)
+      ? jwsRaw
+      : looksLikeJws(receiptRaw)
+        ? receiptRaw
+        : "";
+    // Classic app receipt only (never treat a JWS string as verifyReceipt input).
+    const legacyReceipt =
+      receiptRaw && !looksLikeJws(receiptRaw) ? receiptRaw : "";
+
+    if (!jwsToken && !legacyReceipt) {
+      return res.status(400).json({ message: "jws or receiptData is required" });
     }
 
     const user = await User.findById(req.userId);
@@ -193,23 +327,55 @@ export const validateIosSubscriptionReceipt = async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
 
-    const { result, environment } = await verifyAppleReceipt(receiptData);
-    if (Number(result?.status) !== 0) {
-      return res.status(400).json({
-        message: "Apple receipt validation failed",
-        data: {
-          appleStatus: Number(result?.status || -1),
-          environment,
-        },
+    let syncResult;
+    let jwsErrorMessage = "";
+
+    if (jwsToken) {
+      try {
+        const payload = verifyAndDecodeAppleJws(jwsToken);
+        syncResult = await syncUserFromJwsPayload({
+          user,
+          jws: jwsToken,
+          payload,
+        });
+      } catch (error) {
+        jwsErrorMessage = error instanceof Error ? error.message : String(error);
+        if (!legacyReceipt) {
+          return res.status(400).json({
+            message: "Apple receipt validation failed",
+            error: jwsErrorMessage,
+          });
+        }
+      }
+    }
+
+    if (!syncResult && legacyReceipt) {
+      const { result, environment } = await verifyAppleReceipt(legacyReceipt);
+      if (Number(result?.status) !== 0) {
+        return res.status(400).json({
+          message: "Apple receipt validation failed",
+          data: {
+            appleStatus: Number(result?.status || -1),
+            environment,
+            ...(jwsErrorMessage ? { jwsError: jwsErrorMessage } : {}),
+          },
+        });
+      }
+
+      syncResult = await syncUserFromValidatedReceipt({
+        user,
+        receiptData: legacyReceipt,
+        verifyResult: result,
+        environment,
       });
     }
 
-    const syncResult = await syncUserFromValidatedReceipt({
-      user,
-      receiptData,
-      verifyResult: result,
-      environment,
-    });
+    if (!syncResult) {
+      return res.status(400).json({
+        message: "Apple receipt validation failed",
+        error: jwsErrorMessage || "No valid Apple purchase proof.",
+      });
+    }
 
     return res.status(200).json({
       message: syncResult.active
@@ -218,7 +384,6 @@ export const validateIosSubscriptionReceipt = async (req, res) => {
       data: {
         ...toSummaryPayload(user),
         provider: "apple_iap",
-        environment,
       },
     });
   } catch (error) {
