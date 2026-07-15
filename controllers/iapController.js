@@ -222,6 +222,40 @@ const clearAppleSubscription = async ({ user, receiptData, environment }) => {
   return { active: false, productId: null };
 };
 
+/**
+ * An Apple subscription is tied to an Apple ID, not a Scanly account.
+ * When a new Scanly user restores/validates the same originalTransactionId,
+ * move Premium onto that user and demote any previous Scanly account.
+ */
+const releaseAppleSubscriptionFromOtherUsers = async ({
+  currentUserId,
+  originalTransactionId,
+  environment,
+}) => {
+  const originalId = String(originalTransactionId || "").trim();
+  if (!originalId || !currentUserId) return;
+
+  await User.updateMany(
+    {
+      _id: { $ne: currentUserId },
+      appleOriginalTransactionId: originalId,
+    },
+    {
+      $set: {
+        plan: "free",
+        subscriptionStatus: "canceled",
+        subscriptionCurrentPeriodEnd: null,
+        subscriptionCancelAtPeriodEnd: false,
+        appleProductId: null,
+        appleOriginalTransactionId: null,
+        appleTransactionId: null,
+        appleEnvironment: environment || null,
+        appleAutoRenewStatus: "0",
+      },
+    },
+  );
+};
+
 const syncUserFromValidatedReceipt = async ({ user, receiptData, verifyResult, environment }) => {
   const latestReceiptItem = getLatestSubscriptionReceiptItem(verifyResult);
 
@@ -249,6 +283,15 @@ const syncUserFromValidatedReceipt = async ({ user, receiptData, verifyResult, e
   user.appleEnvironment = environment || null;
   user.appleAutoRenewStatus = autoRenewStatus;
   user.appleLatestReceiptData = receiptData;
+
+  if (isActive && user.appleOriginalTransactionId) {
+    await releaseAppleSubscriptionFromOtherUsers({
+      currentUserId: user._id,
+      originalTransactionId: user.appleOriginalTransactionId,
+      environment,
+    });
+  }
+
   await user.save();
 
   return { active: isActive, productId };
@@ -300,6 +343,15 @@ const syncUserFromJwsPayload = async ({ user, jws, payload }) => {
   user.appleEnvironment = environment || null;
   user.appleAutoRenewStatus = autoRenewStatus;
   user.appleLatestReceiptData = jws;
+
+  if (isActive && user.appleOriginalTransactionId) {
+    await releaseAppleSubscriptionFromOtherUsers({
+      currentUserId: user._id,
+      originalTransactionId: user.appleOriginalTransactionId,
+      environment,
+    });
+  }
+
   await user.save();
 
   return { active: isActive, productId };
