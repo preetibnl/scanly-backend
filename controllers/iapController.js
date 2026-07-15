@@ -307,8 +307,11 @@ const syncUserFromJwsPayload = async ({ user, jws, payload }) => {
 
 export const validateIosSubscriptionReceipt = async (req, res) => {
   try {
+    // StyleSync sent `receipt`; Scanly clients send `receiptData` and/or `jws`.
     const jwsRaw = String(req.body?.jws || "").trim();
-    const receiptRaw = String(req.body?.receiptData || "").trim();
+    const receiptRaw = String(
+      req.body?.receiptData || req.body?.receipt || "",
+    ).trim();
     const jwsToken = looksLikeJws(jwsRaw)
       ? jwsRaw
       : looksLikeJws(receiptRaw)
@@ -319,7 +322,9 @@ export const validateIosSubscriptionReceipt = async (req, res) => {
       receiptRaw && !looksLikeJws(receiptRaw) ? receiptRaw : "";
 
     if (!jwsToken && !legacyReceipt) {
-      return res.status(400).json({ message: "jws or receiptData is required" });
+      return res.status(400).json({
+        message: "jws or receiptData is required",
+      });
     }
 
     const user = await User.findById(req.userId);
