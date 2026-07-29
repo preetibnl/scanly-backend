@@ -2,14 +2,19 @@ import crypto from "crypto";
 import mongoose from "mongoose";
 import User from "../models/userModel.js";
 
-const IOS_MONTHLY_PRODUCT_ID = "monthly_subscription";
-const IOS_YEARLY_PRODUCT_ID = "yearly_subscription";
-/** Current App Store Connect IDs plus previous reverse-DNS IDs (migration safety). */
+const IOS_MONTHLY_PRODUCT_ID =
+  "com.makescanly.scanlyapp.subscription.monthly";
+const IOS_YEARLY_PRODUCT_ID =
+  "com.makescanly.scanlyapp.subscription.yearly";
+/** Current App Store Connect IDs plus previous product IDs (migration safety). */
 const SUPPORTED_PRODUCT_IDS = new Set([
   IOS_MONTHLY_PRODUCT_ID,
   IOS_YEARLY_PRODUCT_ID,
+  "monthly_subscription",
+  "yearly_subscription",
   "com.makescanly.scanlyapp.premium.monthly",
   "com.makescanly.scanlyapp.premium.yearly",
+  "com.makescanly.scanlyapp.premium.month",
 ]);
 const EXPECTED_BUNDLE_ID = "com.makescanly.scanlyapp";
 
@@ -23,11 +28,18 @@ const parseDateMs = (value) => {
 
 const normalizeAppleStatus = (active) => (active ? "active" : "canceled");
 
+const isYearlyProductId = (productId) => {
+  const id = String(productId || "");
+  return (
+    id === IOS_YEARLY_PRODUCT_ID ||
+    id === "yearly_subscription" ||
+    id === "com.makescanly.scanlyapp.premium.yearly" ||
+    /yearly|year/i.test(id)
+  );
+};
+
 const toDisplayByProductId = (productId) => {
-  if (
-    productId === IOS_YEARLY_PRODUCT_ID ||
-    productId === "com.makescanly.scanlyapp.premium.yearly"
-  ) {
+  if (isYearlyProductId(productId)) {
     return {
       amountDisplay: "$49.99",
       intervalLabel: "per year",

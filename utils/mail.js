@@ -27,7 +27,11 @@ const getTransporter = () => {
   return transporter;
 };
 
-const getFromAddress = () => process.env.SMTP_FROM || process.env.SMTP_USER;
+const SUPPORT_FROM_EMAIL = "getscanly.com@gmail.com";
+
+const getFromAddress = () =>
+  process.env.SMTP_FROM?.trim() ||
+  `Scanly <${SUPPORT_FROM_EMAIL}>`;
 
 export const logMailStartupProbe = async () => {
   const host = process.env.SMTP_HOST;
