@@ -2,14 +2,14 @@ import crypto from "crypto";
 import mongoose from "mongoose";
 import User from "../models/userModel.js";
 
-const IOS_MONTHLY_PRODUCT_ID =
-  "com.makescanly.scanlyapp.subscription.monthly";
-const IOS_YEARLY_PRODUCT_ID =
-  "com.makescanly.scanlyapp.subscription.yearly";
+const IOS_MONTHLY_PRODUCT_ID = "scanly_premium_monthly";
+const IOS_YEARLY_PRODUCT_ID = "scanly_premium_yearly";
 /** Current App Store Connect IDs plus previous product IDs (migration safety). */
 const SUPPORTED_PRODUCT_IDS = new Set([
   IOS_MONTHLY_PRODUCT_ID,
   IOS_YEARLY_PRODUCT_ID,
+  "com.makescanly.scanlyapp.subscription.monthly",
+  "com.makescanly.scanlyapp.subscription.yearly",
   "monthly_subscription",
   "yearly_subscription",
   "com.makescanly.scanlyapp.premium.monthly",
@@ -32,6 +32,8 @@ const isYearlyProductId = (productId) => {
   const id = String(productId || "");
   return (
     id === IOS_YEARLY_PRODUCT_ID ||
+    id === "scanly_premium_yearly" ||
+    id === "com.makescanly.scanlyapp.subscription.yearly" ||
     id === "yearly_subscription" ||
     id === "com.makescanly.scanlyapp.premium.yearly" ||
     /yearly|year/i.test(id)
