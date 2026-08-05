@@ -44,6 +44,10 @@ const userSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    subscriptionPurchaseDate: {
+      type: Date,
+      default: null,
+    },
     subscriptionCancelAtPeriodEnd: {
       type: Boolean,
       default: false,

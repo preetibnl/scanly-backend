@@ -208,6 +208,7 @@ const toSummaryPayload = (user) => {
     plan: isPremium ? "premium" : "free",
     subscriptionStatus: normalizeAppleStatus(isPremium),
     subscriptionCurrentPeriodEnd: user.subscriptionCurrentPeriodEnd || null,
+    subscriptionPurchaseDate: user.subscriptionPurchaseDate || null,
     subscriptionCancelAtPeriodEnd: hasApple
       ? user.appleAutoRenewStatus === "0"
       : Boolean(user.subscriptionCancelAtPeriodEnd),
@@ -225,6 +226,7 @@ const clearAppleSubscription = async ({ user, receiptData, environment }) => {
   user.plan = "free";
   user.subscriptionStatus = "canceled";
   user.subscriptionCurrentPeriodEnd = null;
+  user.subscriptionPurchaseDate = null;
   user.subscriptionCancelAtPeriodEnd = false;
   user.appleProductId = null;
   user.appleOriginalTransactionId = null;
@@ -259,6 +261,7 @@ const releaseAppleSubscriptionFromOtherUsers = async ({
         plan: "free",
         subscriptionStatus: "canceled",
         subscriptionCurrentPeriodEnd: null,
+        subscriptionPurchaseDate: null,
         subscriptionCancelAtPeriodEnd: false,
         appleProductId: null,
         appleOriginalTransactionId: null,
@@ -279,6 +282,9 @@ const syncUserFromValidatedReceipt = async ({ user, receiptData, verifyResult, e
 
   const productId = String(latestReceiptItem.product_id || "");
   const expiresDateMs = parseDateMs(latestReceiptItem.expires_date_ms);
+  const purchaseDateMs = parseDateMs(
+    latestReceiptItem.original_purchase_date_ms || latestReceiptItem.purchase_date_ms,
+  );
   const nowMs = Date.now();
   const isActive = expiresDateMs > nowMs;
   const autoRenewStatus = getAutoRenewStatus(
@@ -289,6 +295,9 @@ const syncUserFromValidatedReceipt = async ({ user, receiptData, verifyResult, e
   user.plan = isActive ? "premium" : "free";
   user.subscriptionStatus = normalizeAppleStatus(isActive);
   user.subscriptionCurrentPeriodEnd = expiresDateMs > 0 ? new Date(expiresDateMs) : null;
+  if (purchaseDateMs > 0) {
+    user.subscriptionPurchaseDate = new Date(purchaseDateMs);
+  }
   user.subscriptionCancelAtPeriodEnd = isActive ? autoRenewStatus === "0" : false;
   user.appleProductId = productId || null;
   user.appleOriginalTransactionId =
@@ -336,6 +345,9 @@ const syncUserFromJwsPayload = async ({ user, jws, payload }) => {
   }
 
   const expiresDateMs = parseDateMs(payload?.expiresDate);
+  const purchaseDateMs = parseDateMs(
+    payload?.originalPurchaseDate || payload?.purchaseDate,
+  );
   const nowMs = Date.now();
   // Some non-expiring shapes omit expiresDate; treat missing expiry as active when product matches.
   const isActive = expiresDateMs > 0 ? expiresDateMs > nowMs : true;
@@ -349,6 +361,9 @@ const syncUserFromJwsPayload = async ({ user, jws, payload }) => {
   user.plan = isActive ? "premium" : "free";
   user.subscriptionStatus = normalizeAppleStatus(isActive);
   user.subscriptionCurrentPeriodEnd = expiresDateMs > 0 ? new Date(expiresDateMs) : null;
+  if (purchaseDateMs > 0) {
+    user.subscriptionPurchaseDate = new Date(purchaseDateMs);
+  }
   user.subscriptionCancelAtPeriodEnd = isActive ? autoRenewStatus === "0" : false;
   user.appleProductId = productId || null;
   user.appleOriginalTransactionId =
@@ -477,7 +492,7 @@ export const getIosBillingSummary = async (req, res) => {
     }
 
     const user = await User.findById(userId).select(
-      "plan subscriptionStatus subscriptionCurrentPeriodEnd subscriptionCancelAtPeriodEnd stripeCustomerId appleProductId appleOriginalTransactionId appleTransactionId appleEnvironment appleAutoRenewStatus",
+      "plan subscriptionStatus subscriptionCurrentPeriodEnd subscriptionPurchaseDate subscriptionCancelAtPeriodEnd stripeCustomerId appleProductId appleOriginalTransactionId appleTransactionId appleEnvironment appleAutoRenewStatus",
     );
 
     if (!user) {

@@ -987,7 +987,7 @@ export const getBillingSummary = async (req, res) => {
   }
 
   const user = await User.findById(userId).select(
-    "plan email stripeCustomerId stripeSubscriptionId subscriptionStatus subscriptionCurrentPeriodEnd subscriptionCancelAtPeriodEnd",
+    "plan email stripeCustomerId stripeSubscriptionId subscriptionStatus subscriptionCurrentPeriodEnd subscriptionPurchaseDate subscriptionCancelAtPeriodEnd",
   );
   if (!user) {
     return res.status(404).json({ message: "User not found" });
@@ -1005,6 +1005,7 @@ export const getBillingSummary = async (req, res) => {
       plan,
       subscriptionStatus: normalizedStatus,
       subscriptionCurrentPeriodEnd: user.subscriptionCurrentPeriodEnd || null,
+      subscriptionPurchaseDate: user.subscriptionPurchaseDate || null,
       paymentMethodLabel: null,
       latestInvoiceLabel: null,
       amountDisplay: null,
@@ -1049,6 +1050,7 @@ export const getBillingSummary = async (req, res) => {
     let effectivePlan = (user.plan || "free").toLowerCase() === "premium" ? "premium" : "free";
     let effectiveSubscriptionStatus = user.subscriptionStatus || null;
     let effectiveCurrentPeriodEnd = user.subscriptionCurrentPeriodEnd || null;
+    let effectivePurchaseDate = user.subscriptionPurchaseDate || null;
     let effectiveCancelAtPeriodEnd = Boolean(user.subscriptionCancelAtPeriodEnd);
 
     const applySubscriptionToSummary = (sub) => {
@@ -1056,6 +1058,9 @@ export const getBillingSummary = async (req, res) => {
       effectiveCurrentPeriodEnd = sub.current_period_end
         ? new Date(sub.current_period_end * 1000)
         : null;
+      if (sub.start_date) {
+        effectivePurchaseDate = new Date(sub.start_date * 1000);
+      }
       effectiveCancelAtPeriodEnd = Boolean(sub.cancel_at_period_end);
       effectivePlan = premiumStatuses.has(sub.status) ? "premium" : "free";
       const price = sub.items?.data?.[0]?.price;
@@ -1132,6 +1137,7 @@ export const getBillingSummary = async (req, res) => {
       plan: effectivePlan,
       subscriptionStatus: effectiveSubscriptionStatus,
       subscriptionCurrentPeriodEnd: effectiveCurrentPeriodEnd,
+      subscriptionPurchaseDate: effectivePurchaseDate,
       subscriptionCancelAtPeriodEnd: effectiveCancelAtPeriodEnd,
       paymentMethodLabel,
       latestInvoiceLabel,
