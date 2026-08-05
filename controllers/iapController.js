@@ -210,7 +210,8 @@ const toSummaryPayload = (user) => {
     subscriptionCurrentPeriodEnd: user.subscriptionCurrentPeriodEnd || null,
     subscriptionPurchaseDate: user.subscriptionPurchaseDate || null,
     subscriptionCancelAtPeriodEnd: hasApple
-      ? user.appleAutoRenewStatus === "0"
+      ? Boolean(user.subscriptionCancelAtPeriodEnd) ||
+        user.appleAutoRenewStatus === "0"
       : Boolean(user.subscriptionCancelAtPeriodEnd),
     paymentMethodLabel: hasApple ? "Managed by Apple App Store" : null,
     latestInvoiceLabel: hasApple ? "Available in Apple subscription history" : null,
@@ -218,7 +219,10 @@ const toSummaryPayload = (user) => {
     intervalLabel: isPremium ? display.intervalLabel : null,
     planTitle: isPremium ? display.planTitle : null,
     billingInterval: isPremium ? display.billingInterval : "month",
-    autoPayEnabled: hasApple ? user.appleAutoRenewStatus === "1" : false,
+    autoPayEnabled: hasApple
+      ? user.appleAutoRenewStatus === "1" &&
+        !Boolean(user.subscriptionCancelAtPeriodEnd)
+      : false,
   };
 };
 
@@ -298,13 +302,17 @@ const syncUserFromValidatedReceipt = async ({ user, receiptData, verifyResult, e
   if (purchaseDateMs > 0) {
     user.subscriptionPurchaseDate = new Date(purchaseDateMs);
   }
-  user.subscriptionCancelAtPeriodEnd = isActive ? autoRenewStatus === "0" : false;
+  // Keep in-app cancel-at-period-end until the paid period ends.
+  const appleCancelled = autoRenewStatus === "0";
+  user.subscriptionCancelAtPeriodEnd = isActive
+    ? appleCancelled || Boolean(user.subscriptionCancelAtPeriodEnd)
+    : false;
   user.appleProductId = productId || null;
   user.appleOriginalTransactionId =
     String(latestReceiptItem.original_transaction_id || "") || null;
   user.appleTransactionId = String(latestReceiptItem.transaction_id || "") || null;
   user.appleEnvironment = environment || null;
-  user.appleAutoRenewStatus = autoRenewStatus;
+  user.appleAutoRenewStatus = user.subscriptionCancelAtPeriodEnd ? "0" : autoRenewStatus;
   user.appleLatestReceiptData = receiptData;
 
   if (isActive && user.appleOriginalTransactionId) {
@@ -364,13 +372,16 @@ const syncUserFromJwsPayload = async ({ user, jws, payload }) => {
   if (purchaseDateMs > 0) {
     user.subscriptionPurchaseDate = new Date(purchaseDateMs);
   }
-  user.subscriptionCancelAtPeriodEnd = isActive ? autoRenewStatus === "0" : false;
+  const appleCancelled = autoRenewStatus === "0";
+  user.subscriptionCancelAtPeriodEnd = isActive
+    ? appleCancelled || Boolean(user.subscriptionCancelAtPeriodEnd)
+    : false;
   user.appleProductId = productId || null;
   user.appleOriginalTransactionId =
     String(payload?.originalTransactionId || "") || null;
   user.appleTransactionId = String(payload?.transactionId || "") || null;
   user.appleEnvironment = environment || null;
-  user.appleAutoRenewStatus = autoRenewStatus;
+  user.appleAutoRenewStatus = user.subscriptionCancelAtPeriodEnd ? "0" : autoRenewStatus;
   user.appleLatestReceiptData = jws;
 
   if (isActive && user.appleOriginalTransactionId) {
@@ -484,6 +495,66 @@ export const restoreIosSubscription = async (req, res) => {
   return validateIosSubscriptionReceipt(req, res);
 };
 
+/**
+ * Cancel AutoPay at period end for Apple IAP users.
+ * Premium stays active until subscriptionCurrentPeriodEnd, then becomes free/inactive.
+ */
+export const cancelIosSubscriptionAtPeriodEnd = async (req, res) => {
+  try {
+    const userId = req.userId;
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: "Invalid user id" });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const isPremium =
+      String(user.plan || "free").toLowerCase() === "premium" &&
+      String(user.subscriptionStatus || "").toLowerCase() === "active";
+
+    if (!isPremium || !user.appleProductId) {
+      return res.status(400).json({
+        message: "No active Apple subscription to cancel.",
+      });
+    }
+
+    const periodEnd = user.subscriptionCurrentPeriodEnd
+      ? new Date(user.subscriptionCurrentPeriodEnd)
+      : null;
+    if (periodEnd && !Number.isNaN(periodEnd.getTime()) && periodEnd.getTime() <= Date.now()) {
+      user.plan = "free";
+      user.subscriptionStatus = "canceled";
+      user.subscriptionCancelAtPeriodEnd = false;
+      user.appleAutoRenewStatus = "0";
+      await user.save();
+      return res.status(200).json({
+        message: "Subscription already expired.",
+        data: toSummaryPayload(user),
+      });
+    }
+
+    user.subscriptionCancelAtPeriodEnd = true;
+    user.appleAutoRenewStatus = "0";
+    // Keep plan premium + active until the paid period ends.
+    user.plan = "premium";
+    user.subscriptionStatus = "active";
+    await user.save();
+
+    return res.status(200).json({
+      message: "Subscription cancelled. Access continues until the current period ends.",
+      data: toSummaryPayload(user),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: "Could not cancel Apple subscription",
+      error: error.message,
+    });
+  }
+};
+
 export const getIosBillingSummary = async (req, res) => {
   try {
     const { userId } = req.params;
@@ -497,6 +568,26 @@ export const getIosBillingSummary = async (req, res) => {
 
     if (!user) {
       return res.status(404).json({ message: "User not found" });
+    }
+
+    // Auto-expire after the paid billing period ends.
+    const periodEnd = user.subscriptionCurrentPeriodEnd
+      ? new Date(user.subscriptionCurrentPeriodEnd)
+      : null;
+    const isPremium =
+      String(user.plan || "free").toLowerCase() === "premium" &&
+      String(user.subscriptionStatus || "").toLowerCase() === "active";
+    if (
+      isPremium &&
+      periodEnd &&
+      !Number.isNaN(periodEnd.getTime()) &&
+      periodEnd.getTime() <= Date.now()
+    ) {
+      user.plan = "free";
+      user.subscriptionStatus = "canceled";
+      user.subscriptionCancelAtPeriodEnd = false;
+      user.appleAutoRenewStatus = "0";
+      await user.save();
     }
 
     return res.status(200).json({
